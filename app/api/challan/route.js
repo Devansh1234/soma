@@ -43,7 +43,7 @@ export async function GET(request) {
     .from('ChallanRecords')
     .select('*', { count: 'exact' })
     .like('Challan Number', `${prefix}/%`)
-    .order('Generated DateTime', { ascending: false })
+    .order('Challan Number', { ascending: false })
     .range(offset, offset + limit - 1);
 
   if (search)   query = query.or(`"Customer Name".ilike.%${search}%,"Challan Number".ilike.%${search}%,ccid.ilike.%${search}%`);
