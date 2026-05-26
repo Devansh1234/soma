@@ -292,6 +292,68 @@ async function generatePDF(challan, returnBlob = false) {
   doc.save(challan.challanNumber.replace(/\//g, '-') + '.pdf');
 }
 
+// ── Reprint helpers ──────────────────────────────────────────────────────────
+
+// Parse "ProductName (Rs.1,000.00 x 2); ..." back into product objects
+function parseProductsString(str) {
+  if (!str) return [];
+  return str.split('; ').map(item => {
+    const match = item.match(/^(.+?)\s+\(Rs\.([\d,]+\.?\d*)\s+x\s+(\d+)\)$/);
+    if (match) {
+      return {
+        name:     match[1],
+        price:    parseFloat(match[2].replace(/,/g, '')),
+        quantity: parseInt(match[3]),
+      };
+    }
+    // Fallback: no price/qty info found
+    return { name: item.replace(/\s+\(Rs\..*$/, ''), price: 0, quantity: 1 };
+  }).filter(p => p.name.trim());
+}
+
+// Reconstruct challan data from a ChallanRecords row and regenerate the PDF
+async function reprintChallan(row) {
+  const prefix     = (row['Challan Number'] || '').split('/')[0];
+  const prefixMap  = { SCC: 'soma', NCC: 'nalanda', GEC: 'gangotri' };
+  const company    = COMPANIES[prefixMap[prefix]] || Object.values(COMPANIES)[0];
+
+  // Reconstruct challan date from Generated DateTime ("DD-MM-YYYY HH:MM")
+  let challanDate = row['Order Dated'] || '';
+  const genDT = row['Generated DateTime'] || '';
+  if (genDT) {
+    const parts = genDT.split(' ')[0]?.split('-');
+    if (parts?.length === 3) {
+      const d = new Date(parts[2], parts[1] - 1, parts[0]);
+      if (!isNaN(d)) {
+        challanDate = d.toLocaleDateString('en-IN', {
+          day: '2-digit', month: 'short', year: 'numeric'
+        }).replace(/ /g, '-');
+      }
+    }
+  }
+
+  const challanData = {
+    challanNumber:    row['Challan Number'],
+    challanDate,
+    ccid:             row.ccid || '',
+    company,
+    customer: {
+      name:     row['Customer Name']  || '',
+      gstin:    row['GSTIN']          || '',
+      address1: row['Address Line 1'] || '',
+      address2: row['Address Line 2'] || '',
+      mobile:   row['Mobile']         || '',
+    },
+    products:         parseProductsString(row['Products']),
+    orderReference:   row['Order Reference']  || '',
+    orderDate:        row['Order Dated']       || '',
+    invoiceReference: row.invoice_reference   || '',
+    invoiceDated:     row.invoice_dated        || '',
+  };
+
+  await generatePDF(challanData);
+}
+
 // ── Records Table ─────────────────────────────────────────────────────────────
 function RecordsTable({ rows, user, onAction, loading }) {
   if (loading) return <div className="spinner" style={{ margin: '20px auto' }} />;
@@ -303,7 +365,7 @@ function RecordsTable({ rows, user, onAction, loading }) {
         <thead>
           <tr>
             <th>Challan No.</th><th>CCID</th><th>Customer</th>
-            <th>Date</th><th>Status</th><th>Invoice No.</th><th>By</th><th>Actions</th>
+            <th>Date</th><th>Status</th><th>Invoice No.</th><th>By</th><th>Actions</th><th>PDF</th>
           </tr>
         </thead>
         <tbody>
@@ -331,6 +393,12 @@ function RecordsTable({ rows, user, onAction, loading }) {
                     <button className="btn btn-danger btn-sm" onClick={() => onAction(cn, 'cancel')}>Cancel</button>
                   )}
                   {!perms.rtc_challan && !perms.cancel_challan && <span style={{ fontSize: 11, color: 'var(--muted)' }}>—</span>}
+                </td>
+                <td>
+                  <button className="btn btn-secondary btn-sm" onClick={() => reprintChallan(row)}
+                    title={`Reprint ${cn}`}>
+                    ⬇ PDF
+                  </button>
                 </td>
               </tr>
             );
