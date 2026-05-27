@@ -1,9 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // Needed for jsPDF dynamic import
   webpack: (config) => {
-    config.resolve.alias.canvas = false;
+    // Suppress canvas/encoding peer deps that pdfjs-dist and jsPDF reference
+    config.resolve.alias.canvas   = false;
+    config.resolve.alias.encoding = false;
     return config;
   },
 };
