@@ -65,7 +65,15 @@ function ReceiveStockTab({ company }) {
         body: JSON.stringify({ pdfBase64: base64 }),
       });
       const data = await resp.json();
-      if (!resp.ok) { setError(data.error || 'Parse failed'); return; }
+      if (!resp.ok) {
+        // Show debug lines so we can diagnose the text extraction layout
+        let msg = data.error || 'Parse failed';
+        if (data.debugLines) {
+          msg += '\n\nExtracted text (first 30 lines):\n' + data.debugLines.slice(0,30).join('\n');
+        }
+        setError(msg);
+        return;
+      }
       setParsed(data);
       setStage('review');
     } catch (e) { setError(e.message); }
