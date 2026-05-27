@@ -4,81 +4,86 @@ import { NextResponse } from 'next/server';
 import { getCurrentUser, canAccess } from '@/lib/auth';
 
 function parseGodrejInvoice(text) {
-  const lines = text.split(/[\n\r]+/).map(l => l.trim()).filter(Boolean);
-
+  // ── Header ──────────────────────────────────────────────────────────────
   const invNoMatch = text.match(/Sales Invoice No\s*[:\s]+([\dA-Z\-]+)/i);
   const dateMatch  = text.match(/Date\s*[:\s]+(\d{2}-\d{2}-\d{4})/);
   const invoiceNumber = invNoMatch ? invNoMatch[1].replace(/[-\s]/g,'') : 'UNKNOWN';
   const invoiceDate   = dateMatch  ? dateMatch[1] : '';
 
-  const LN_PATTERN = /[0-9]{8}[A-Z]{2}[0-9]{5}/g;
+  // Strip everything from the annexure/page-2 onwards
+  const mainText = text.split(/ANNEXURE|Page No[\s\-]+2/i)[0];
 
-  // Deduplicate but track each occurrence (same LN code = multiple items)
-  const occurrences = [...text.matchAll(LN_PATTERN)].map(m => ({
-    lnCode: m[0],
-    offset: m.index,
-  }));
-
-  if (occurrences.length === 0) {
-    return { invoiceNumber, invoiceDate, items: [],
-      _debug: { totalLines: lines.length, first40Lines: lines.slice(0, 40) } };
-  }
-
-  // Filter out occurrences in the ANNEXURE/BOM section at end of invoice
-  const annexureOffset = text.search(/ANNEXURE|BOM Items/i);
-  const mainOccurrences = annexureOffset > 0
-    ? occurrences.filter(o => o.offset < annexureOffset)
-    : occurrences;
-
-  if (mainOccurrences.length === 0) {
-    return { invoiceNumber, invoiceDate, items: [],
-      _debug: { note: 'All LN codes were in ANNEXURE section', first40Lines: lines.slice(0, 40) } };
-  }
+  // ── Strategy 1: Direct port of the working C# regex ─────────────────────
+  // Uses \s+ so it works whether pdf-parse puts values on one line or many.
+  // Groups: 1=prefix 2=base_ln 3=suffix 4=QTY(4dec) 5=WEIGHT 6=SR_NO
+  //         7=PACKAGES 8=TAXABLE 9=DESCRIPTION 10=UOM
+  const csPattern = /([A-Z0-9]+-)?([0-9]{8}[A-Z]{2}[0-9]{5})(\/[A-Z0-9]+)?\s+([\d]+\.[\d]{4})\s+([\d]+\.[\d]{2})\s+[\d.]+%?\s+[\d.]+%?\s+[\d.]+%?\s+(\d+)\s+[\w\/]+\s+\d+\s+(\d+)\s+[\d,.]+\s+([\d,.]+)\s+[\d,.]+\s+(.+?)\s+(ECH|EA)/gs;
 
   const items = [];
-
-  for (const { lnCode, offset } of mainOccurrences) {
-    // Find the line containing this specific occurrence
-    const textBefore = text.substring(0, offset);
-    const lineIndex  = textBefore.split('\n').length - 1;
-    const lnLine     = lines[lineIndex] || '';
-
-    // Qty: first decimal after LN code on same line
-    const afterLN  = lnLine.substring(lnLine.indexOf(lnCode) + lnCode.length);
-    const qtyMatch = afterLN.match(/(\d+\.\d+)/);
-    const qty      = qtyMatch ? parseFloat(qtyMatch[1]) : 1;
-
-    // Context: next 6 lines
-    const ctx = lines.slice(lineIndex + 1, lineIndex + 7);
-
-    // Packages + taxable value
-    let packages = 1, taxableTotal = 0;
-    for (const cl of ctx) {
-      // Try: optional_sr + ORDER + 8digit_HSN + PKGS + BASIC.4 + TAX.4 + TOTAL.4
-      const m = cl.match(/\d{8}\s+(\d+)\s+([\d,]+\.\d{4})\s+([\d,]+\.\d{4})\s+([\d,]+\.\d{4})/);
-      if (m) { packages = parseInt(m[1])||1; taxableTotal = parseFloat(m[3].replace(/,/g,'')); break; }
-      // Fallback: PKGS + 3 large 4-dec amounts
-      const m2 = cl.match(/^(\d+)\s+([\d,]+\.\d{4})\s+([\d,]+\.\d{4})\s+([\d,]+\.\d{4})/);
-      if (m2 && parseFloat(m2[2]) > 100) { packages=parseInt(m2[1])||1; taxableTotal=parseFloat(m2[3].replace(/,/g,'')); break; }
-    }
-
-    const price = qty > 0 && taxableTotal > 0
-      ? Math.round(taxableTotal / qty * 100) / 100 : 0;
-
-    // Description: text before ECH/EA UOM marker
-    let description = `Product ${lnCode}`;
-    for (const cl of ctx) {
-      const eIdx = cl.search(/\s+(?:ECH|EA)\s+(?:KG|EA|NOS|PKT)/i);
-      if (eIdx > 3) {
-        const cand = cl.substring(0, eIdx).trim();
-        if (/[A-Za-z]{3,}/.test(cand)) { description = cand; break; }
-      }
-    }
-
-    items.push({ ln_code:lnCode, product_name:description, quantity:Math.max(1,Math.round(qty)),
-                 packets_in_product:String(packages), price, received:true });
+  let m;
+  while ((m = csPattern.exec(mainText)) !== null) {
+    const qty     = parseFloat(m[4]);
+    const taxable = parseFloat(m[8].replace(/,/g,''));
+    const desc    = m[9].replace(/\s+/g,' ').trim();
+    items.push({
+      ln_code:            ((m[1]||'') + m[2] + (m[3]||'')).trim(),
+      product_name:       desc || `Product ${m[2]}`,
+      quantity:           Math.max(1, Math.round(qty)),
+      packets_in_product: m[7],
+      price:              qty > 0 && taxable > 0 ? Math.round(taxable/qty*100)/100 : 0,
+      received:           true,
+    });
   }
 
+  if (items.length > 0) {
+    console.log(`Strategy 1 (C# regex) found ${items.length} items`);
+    return { invoiceNumber, invoiceDate, items };
+  }
+
+  // ── Strategy 2: Find LN codes, use 4-decimal precision to get qty ────────
+  // In Godrej invoices: QTY always has exactly 4 decimal places (1.0000, 2.0000)
+  // Discount/CGST/SGST amounts have 2 decimal places — this is the key differentiator
+  console.log('Strategy 1 found 0 items, trying Strategy 2...');
+
+  const LN_RE = /[0-9]{8}[A-Z]{2}[0-9]{5}/g;
+  const annexureOffset = mainText.search(/ANNEXURE|Page No[\s\-]+2/i);
+
+  const occurrences = [...mainText.matchAll(LN_RE)].filter(o =>
+    annexureOffset < 0 || o.index < annexureOffset
+  );
+
+  for (const occ of occurrences) {
+    const lnCode = occ[0];
+    const start  = occ.index;
+    // Take 400 chars after the LN code (spans all 3 sub-lines)
+    const window = mainText.substring(start, start + 400).replace(/\n/g,' ').replace(/\s+/g,' ');
+
+    // QTY: first number with EXACTLY 4 decimal places (e.g. 1.0000, 2.0000)
+    const qtyMatch = window.match(/\b(\d{1,3}\.\d{4})\b/);
+    const qty      = qtyMatch ? parseFloat(qtyMatch[1]) : 1;
+
+    // TAXABLE TOTAL: numbers with 4 decimal places in the thousands (e.g. 25074.3000)
+    // Typically the 2nd or 3rd 4-decimal number; basic > taxable > total in value
+    const fourDecNums = [...window.matchAll(/\b([\d,]+\.\d{4})\b/g)]
+      .map(n => parseFloat(n[1].replace(/,/g,'')))
+      .filter(n => n > 500); // filter out qty/weight decimals
+    // taxable is the second large amount (after basic), so index 1
+    const taxable = fourDecNums.length >= 2 ? fourDecNums[1] : fourDecNums[0] || 0;
+    const price   = qty > 0 && taxable > 0 ? Math.round(taxable/qty*100)/100 : 0;
+
+    // PACKAGES: small integer (1–99) that appears right after the HSN code (8 digits)
+    const pkgsMatch = window.match(/\d{8}\s+(\d{1,2})\b/);
+    const packages  = pkgsMatch ? pkgsMatch[1] : '1';
+
+    // DESCRIPTION: text before ECH or EA
+    const descMatch = window.match(/([A-Z][A-Za-z0-9\s]{5,}?)\s+(?:ECH|EA)\b/);
+    const description = descMatch ? descMatch[1].replace(/\s+/g,' ').trim() : `Product ${lnCode}`;
+
+    items.push({ ln_code:lnCode, product_name:description, quantity:Math.max(1,Math.round(qty)),
+                 packets_in_product:packages, price, received:true });
+  }
+
+  console.log(`Strategy 2 found ${items.length} items`);
   return { invoiceNumber, invoiceDate, items };
 }
 
@@ -96,17 +101,16 @@ export async function POST(request) {
     const pdfData = await pdfParse(buffer);
     const text    = pdfData.text;
 
-    // Log to Vercel so we can see the raw extraction
-    console.log('=== INVOICE PDF LINES (first 60) ===');
-    text.split('\n').slice(0,60).forEach((l,i) => console.log(`L${i}: ${l}`));
+    // Log first 80 lines for debugging
+    console.log('=== PDF LINES (first 80) ===');
+    text.split('\n').slice(0,80).forEach((l,i) => console.log(`L${i}: ${l}`));
 
     const result = parseGodrejInvoice(text);
 
     if (!result.items.length) {
       return NextResponse.json({
-        error: 'No line items found — see debugLines for what was extracted',
+        error: 'No line items found. Check Vercel logs for raw PDF text.',
         debugLines: text.split('\n').slice(0,60),
-        _debug: result._debug,
       },{ status:422 });
     }
 
