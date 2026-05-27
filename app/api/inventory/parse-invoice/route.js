@@ -30,15 +30,29 @@ function parseGodrejInvoice(text) {
   // Line A: LN code + qty.4dec + weight.2dec
   const LINE_A_RE = /^([A-Z0-9]+-)?([0-9]{8}[A-Z]{2}[0-9]{5})(\/[A-Z0-9]+)?\s*([\d]+\.[\d]{4})\s*([\d]+\.[\d]{2})/;
 
-  // Line B: Sr number then uppercase (start of WON... order)
+  // Line B: starts with Sr number then uppercase letter (WON... order)
   const LINE_B_RE = /^\d+[A-Z]/;
 
   // Line C: description ends at UOM keyword
   const LINE_C_RE = /^(.+?)(ECH|EA|PKT|NOS|PCS)/;
 
-  // Extract all decimal numbers from a string using match() — safer than matchAll spread
-  function extractDecimals(str) {
-    return (str.match(/\d+\.\d+/g) || []).map(Number);
+  // Extract last 3 numbers from end of Line B — anchored to $ so the
+  // concatenated mess in the middle doesn't matter.
+  // Line B always ends: ...{pkgQty.4dec}{taxableTotal.4dec}{grandTotal.4dec}
+  // e.g. "1WON059586/70/094032090426394.000025074.300029587.6800"
+  //                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  //                                     these 3×4-decimal groups at the end
+  function extractLineBTotals(lineB) {
+    // All three trailing numbers have exactly 4 decimal places
+    const m = lineB.match(/(\d+\.\d{4})(\d+\.\d{4})(\d+\.\d{4})$/);
+    if (m) {
+      return {
+        pkgQty:       parseFloat(m[1]),
+        taxableTotal: parseFloat(m[2]),
+        grandTotal:   parseFloat(m[3]),
+      };
+    }
+    return null;
   }
 
   const items = [];
@@ -57,34 +71,28 @@ function parseGodrejInvoice(text) {
     const mC = lineC.match(LINE_C_RE);
     if (!mC) continue;
 
-    // Get all decimal numbers from Line B
-    const nums = extractDecimals(lineB);
-
-    console.log(`[invoice-parse] Line B nums (${nums.length}): ${nums.join(', ')} | line: ${lineB}`);
-
-    if (nums.length < 3) {
-      console.log(`[invoice-parse] WARNING: fewer than 3 decimals in Line B, skipping`);
+    const totals = extractLineBTotals(lineB);
+    if (!totals) {
+      console.log(`[invoice-parse] Could not extract totals from Line B: ${lineB}`);
       i += 2;
       continue;
     }
 
-    // Last 3 decimals are always: {pkg_qty.4dec}  {taxable_total.Ndec}  {grand_total.4dec}
-    const pkgQty       = nums[nums.length - 3];
-    const taxableTotal = nums[nums.length - 2];
-
     const qtyFromA  = parseFloat(mA[4]);
     const unitPrice = qtyFromA > 0
-      ? Math.round((taxableTotal / qtyFromA) * 100) / 100
+      ? Math.round((totals.taxableTotal / qtyFromA) * 100) / 100
       : 0;
 
     const lnCode = ((mA[1] || '') + mA[2] + (mA[3] || '')).trim();
     const desc   = mC[1].trim();
 
+    console.log(`[invoice-parse] ${lnCode} | taxable:${totals.taxableTotal} / qty:${qtyFromA} = ₹${unitPrice}`);
+
     items.push({
       ln_code:            lnCode,
       product_name:       desc,
       quantity:           Math.max(1, Math.round(qtyFromA)),
-      packets_in_product: Math.max(1, Math.round(pkgQty)),
+      packets_in_product: Math.max(1, Math.round(totals.pkgQty)),
       price:              unitPrice,
       received:           true,
     });
@@ -93,9 +101,6 @@ function parseGodrejInvoice(text) {
   }
 
   console.log(`[invoice-parse] Invoice: ${invoiceNumber} | Date: ${invoiceDate} | Items: ${items.length}`);
-  items.forEach(it =>
-    console.log(`[invoice-parse]   ${it.ln_code} | ${it.product_name} | qty:${it.quantity} | pkgs:${it.packets_in_product} | ₹${it.price}`)
-  );
 
   return { invoiceNumber, invoiceDate, items };
 }
