@@ -92,7 +92,7 @@ function parseGodrejInvoice(text) {
       ln_code:            lnCode,
       product_name:       desc,
       quantity:           Math.max(1, Math.round(qtyFromA)),
-      packets_in_product: Math.max(1, Math.round(totals.pkgQty)),
+      packets_in_product: Math.max(1, Math.round(qtyFromA)),
       price:              unitPrice,
       received:           true,
     });
