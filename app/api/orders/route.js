@@ -1,131 +1,101 @@
 import { NextResponse } from 'next/server';
-import { getCurrentUser, canAccess } from '@/lib/auth';
+import { getCurrentUser } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
+import { getCompany } from '@/lib/companies';
+import { sendSystemEmail, buildItemsTable, emailWrapper } from '@/lib/email';
 
+// ── GET: list orders ──────────────────────────────────────────────────────────
 export async function GET(request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { searchParams } = new URL(request.url);
-  const status = searchParams.get('status');
+  const status = searchParams.get('status') || '';
 
   let query = supabase
     .from('orders')
-    .select(`*, order_items(*)`)
+    .select('*, order_items(*)')
     .eq('company', user.company)
     .order('created_at', { ascending: false });
 
   // Retailers only see their own orders
   if (user.role === 'retailer') {
-    query = query.eq('retailer_id', user.id);
+    query = query.eq('retailer_name', user.name);
   }
-
   if (status) query = query.eq('status', status);
 
-  const { data, error } = await query.limit(200);
+  const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  return NextResponse.json({ data });
 }
 
+// ── POST: create new order (retailer submits booking) ─────────────────────────
 export async function POST(request) {
   const user = await getCurrentUser();
-  if (!user || !canAccess(user, 'order_booking')) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const body = await request.json();
-  const { items, notes } = body;
-  if (!items?.length) return NextResponse.json({ error: 'No items in order' }, { status: 400 });
+  const { items, notes } = await request.json();
+  if (!items?.length) return NextResponse.json({ error: 'At least one item required' }, { status: 400 });
 
-  // Generate order number
-  const orderNum = `ORD-${user.company.toUpperCase().slice(0, 3)}-${Date.now()}`;
+  const company = getCompany(user.company);
 
-  const { data: order, error: orderError } = await supabase
+  // Create order record
+  const { data: order, error: orderErr } = await supabase
     .from('orders')
     .insert({
-      order_number: orderNum,
-      retailer_id: user.id,
       retailer_name: user.name,
-      company: user.company,
-      status: 'booked',
-      notes: notes || '',
+      retailer_id:   user.id,
+      company:       user.company,
+      status:        'pending_booking',
+      notes:         notes || null,
     })
     .select()
     .single();
+  if (orderErr) return NextResponse.json({ error: orderErr.message }, { status: 500 });
 
-  if (orderError) return NextResponse.json({ error: orderError.message }, { status: 500 });
-
-  const orderItems = items.map(item => ({
-    order_id: order.id,
-    product_name: item.product_name,
-    quantity: parseInt(item.quantity) || 1,
-    price: item.price ? parseFloat(item.price) : null,
+  // Create order items
+  const itemRows = items.map(item => ({
+    order_id:      order.id,
+    product_name:  item.product_name,
+    ln_code:       item.ln_code || null,
+    ordered_qty:   parseInt(item.quantity) || 1,
+    delivered_qty: 0,
+    status:        'pending_booking',
+    retailer_name: user.name,
+    company:       user.company,
   }));
 
-  const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
-  if (itemsError) return NextResponse.json({ error: itemsError.message }, { status: 500 });
-
-  return NextResponse.json({ ok: true, order });
-}
-
-export async function PATCH(request) {
-  const user = await getCurrentUser();
-  if (!user || !canAccess(user, 'order_management')) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const { error: itemsErr } = await supabase.from('order_items').insert(itemRows);
+  if (itemsErr) {
+    await supabase.from('orders').delete().eq('id', order.id);
+    return NextResponse.json({ error: itemsErr.message }, { status: 500 });
   }
 
-  const body = await request.json();
-  const { id, status, notes } = body;
-  if (!id) return NextResponse.json({ error: 'Order ID required' }, { status: 400 });
-
-  const updates = {};
-  if (status) updates.status = status;
-  if (notes !== undefined) updates.notes = notes;
-
-  // When confirming, commit inventory items if linked
-  if (status === 'confirmed') {
-    const { data: order } = await supabase
-      .from('orders')
-      .select('*, order_items(*)')
-      .eq('id', id)
-      .single();
-
-    if (order?.order_items) {
-      const linkedInventoryIds = order.order_items
-        .filter(i => i.inventory_item_id)
-        .map(i => i.inventory_item_id);
-
-      if (linkedInventoryIds.length) {
-        await supabase
-          .from('inventory')
-          .update({ status: 'committed', committed_to_order: id })
-          .in('id', linkedInventoryIds);
-      }
-    }
+  // ── Email company on new booking ──────────────────────────────────────────
+  if (company?.defaultEmail) {
+    const tableHtml = buildItemsTable(
+      ['Product Name', 'LN Code', 'Qty'],
+      items.map(i => [i.product_name, i.ln_code || '—', i.quantity])
+    );
+    await sendSystemEmail({
+      companyEmail: company.defaultEmail,
+      companyName:  company.name,
+      subject: `New Order Booking — ${user.name} — ${items.length} item(s)`,
+      htmlBody: emailWrapper({
+        companyName: company.name,
+        title:       `New Order from ${user.name}`,
+        meta: {
+          'Retailer':    user.name,
+          'Items':       items.length,
+          'Total Units': items.reduce((s,i) => s + (parseInt(i.quantity)||1), 0),
+          'Submitted':   new Date().toLocaleString('en-IN'),
+          'Notes':       notes || '—',
+        },
+        tableHtml,
+        footer: 'Automated notification from Challan & Warehouse System',
+      }),
+    });
   }
 
-  // When dispatching, mark inventory as dispatched
-  if (status === 'dispatched') {
-    await supabase
-      .from('inventory')
-      .update({ status: 'dispatched' })
-      .eq('committed_to_order', id);
-  }
-
-  // When cancelling, free committed inventory
-  if (status === 'cancelled') {
-    await supabase
-      .from('inventory')
-      .update({ status: 'free', committed_to_order: null })
-      .eq('committed_to_order', id);
-  }
-
-  const { error } = await supabase
-    .from('orders')
-    .update(updates)
-    .eq('id', id)
-    .eq('company', user.company);
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, orderId: order.id });
 }
