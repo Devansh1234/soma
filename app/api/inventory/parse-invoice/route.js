@@ -129,7 +129,7 @@ export async function POST(request) {
 
     // text.split('\n').forEach((l, i) =>
     //   console.log(`[invoice-parse] L${String(i).padStart(2, '0')}: ${l}`)
-    );
+    //);
 
     const result = parseGodrejInvoice(text);
 
