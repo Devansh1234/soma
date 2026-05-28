@@ -40,20 +40,48 @@ function ReceiveStockTab({ company }) {
   const [pendingLoading, setPendingLoading] = useState(false);
   const fileRef = useRef();
 
-  useEffect(() => { loadPending(); }, []);
+  const [notReceivedItems, setNRI] = useState([]);
+
+  async function loadNotReceived() {
+    const res = await fetch('/api/inventory?pending=true&not_received=true&limit=200');
+    const { data } = await res.json();
+    setNRI(data || []);
+  }
+
+  async function confirmNotReceived(ids) {
+    const res = await fetch('/api/inventory/confirm-invoice', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (res.ok) {
+      // Also clear not_received flag
+      await Promise.all(ids.map(id =>
+        fetch('/api/inventory', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, not_received: false }),
+        })
+      ));
+      setSuccess(`✓ ${ids.length} item(s) confirmed as received.`);
+      loadPending(); loadNotReceived();
+    } else { const d = await res.json(); setError(d.error); }
+  }
+
+  useEffect(() => { loadPending(); loadNotReceived(); }, []);
 
   async function loadPending() {
     setPendingLoading(true);
-    const res = await fetch('/api/inventory?pending=true&limit=200');
+    const res = await fetch('/api/inventory?pending=true&not_received=false&limit=200');
     const { data } = await res.json();
     setPendingItems(data || []);
     setPendingLoading(false);
   }
 
   async function markNotReceived(id, productName) {
-    if (!confirm(`Mark "${productName}" as NOT received? This will remove it from the pending list.`)) return;
-    const res = await fetch(`/api/inventory?id=${encodeURIComponent(id)}&reason=Not+received+with+this+delivery`, { method: 'DELETE' });
-    if (res.ok) { setSuccess(`"${productName}" removed — not received with this delivery.`); loadPending(); }
+    const res = await fetch('/api/inventory', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, not_received: true }),
+    });
+    if (res.ok) { setSuccess(`"${productName}" moved to Expected — Not Yet Received.`); loadPending(); loadNotReceived(); }
     else { const d = await res.json(); setError(d.error); }
   }
 
@@ -161,6 +189,45 @@ function ReceiveStockTab({ company }) {
             <button className="btn btn-primary btn-sm" style={{ marginTop:10 }}
               onClick={() => confirmPendingItems(pendingItems.map(i => i.id))}>
               ✓ Mark All as Received
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Expected — Not Yet Received */}
+      {notReceivedItems.length > 0 && (
+        <div className="card" style={{ marginTop:20 }}>
+          <div className="card-title" style={{ color:'var(--muted)' }}>
+            📦 Expected — Not Yet Received ({notReceivedItems.length} items)
+          </div>
+          <p style={{ fontSize:12, color:'var(--muted)', marginBottom:12 }}>
+            These items were on an invoice but not physically received at that time. Mark them as received when they arrive.
+          </p>
+          <table>
+            <thead><tr><th>Product Name</th><th>LN Code</th><th>Invoice No.</th><th>Invoice Date</th><th>Price (₹)</th><th>Action</th></tr></thead>
+            <tbody>
+              {notReceivedItems.map((item, i) => (
+                <tr key={i}>
+                  <td>{item.product_name}</td>
+                  <td className="mono" style={{ fontSize:11 }}>{item.product_code || '—'}</td>
+                  <td className="mono" style={{ fontSize:11 }}>{item.invoice_number || '—'}</td>
+                  <td style={{ fontSize:11 }}>{item.invoice_date || '—'}</td>
+                  <td style={{ textAlign:'right', fontFamily:'var(--font-mono)', fontSize:12 }}>
+                    {item.price ? Number(item.price).toLocaleString('en-IN', { minimumFractionDigits:2 }) : '—'}
+                  </td>
+                  <td>
+                    <button className="btn btn-primary btn-sm" onClick={() => confirmNotReceived([item.id])}>
+                      ✓ Now Received
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {notReceivedItems.length > 1 && (
+            <button className="btn btn-primary btn-sm" style={{ marginTop:10 }}
+              onClick={() => confirmNotReceived(notReceivedItems.map(i => i.id))}>
+              ✓ Mark All as Now Received
             </button>
           )}
         </div>
