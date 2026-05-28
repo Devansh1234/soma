@@ -127,8 +127,8 @@ export async function POST(request) {
       return NextResponse.json({ error: 'PDF extraction failed: ' + e.message }, { status: 500 });
     }
 
-    text.split('\n').forEach((l, i) =>
-      console.log(`[invoice-parse] L${String(i).padStart(2, '0')}: ${l}`)
+    // text.split('\n').forEach((l, i) =>
+    //   console.log(`[invoice-parse] L${String(i).padStart(2, '0')}: ${l}`)
     );
 
     const result = parseGodrejInvoice(text);
