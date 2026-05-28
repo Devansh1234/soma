@@ -50,6 +50,13 @@ function ReceiveStockTab({ company }) {
     setPendingLoading(false);
   }
 
+  async function markNotReceived(id, productName) {
+    if (!confirm(`Mark "${productName}" as NOT received? This will remove it from the pending list.`)) return;
+    const res = await fetch(`/api/inventory?id=${encodeURIComponent(id)}&reason=Not+received+with+this+delivery`, { method: 'DELETE' });
+    if (res.ok) { setSuccess(`"${productName}" removed — not received with this delivery.`); loadPending(); }
+    else { const d = await res.json(); setError(d.error); }
+  }
+
   async function handleFile(file) {
     if (!file || !file.name.endsWith('.pdf')) { setError('Please select a PDF file.'); return; }
     setError(''); setParsing(true);
@@ -138,9 +145,12 @@ function ReceiveStockTab({ company }) {
                   <td style={{ textAlign:'right', fontFamily:'var(--font-mono)', fontSize:12 }}>
                     {item.price ? Number(item.price).toLocaleString('en-IN', { minimumFractionDigits:2 }) : '—'}
                   </td>
-                  <td>
+                  <td style={{ whiteSpace:'nowrap', display:'flex', gap:6 }}>
                     <button className="btn btn-primary btn-sm" onClick={() => confirmPendingItems([item.id])}>
                       ✓ Received
+                    </button>
+                    <button className="btn btn-danger btn-sm" onClick={() => markNotReceived(item.id, item.product_name)}>
+                      ✗ Not Received
                     </button>
                   </td>
                 </tr>
