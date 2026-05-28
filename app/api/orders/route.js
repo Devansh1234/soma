@@ -40,9 +40,14 @@ export async function POST(request) {
   const company = getCompany(user.company);
 
   // Create order record
+  // Generate unique order number: ORD/YYYY/MM/timestamp-suffix
+  const now2 = new Date();
+  const orderNumber = `ORD/${now2.getFullYear()}/${String(now2.getMonth()+1).padStart(2,'0')}/${Date.now().toString().slice(-6)}`;
+
   const { data: order, error: orderErr } = await supabase
     .from('orders')
     .insert({
+      order_number:  orderNumber,
       retailer_name: user.name,
       retailer_id:   user.id,
       company:       user.company,
