@@ -33,6 +33,9 @@ export async function GET(request) {
   if (q)        query = query.ilike('product_name', `%${q}%`);
   if (pending === 'true')  query = query.eq('pending_receipt', true);
   if (pending === 'false') query = query.eq('pending_receipt', false);
+  const notReceived = searchParams.get('not_received');
+  if (notReceived === 'true')  query = query.eq('not_received', true);
+  if (notReceived === 'false') query = query.eq('not_received', false);
 
   const { data, error, count } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -121,6 +124,7 @@ export async function PATCH(request) {
   if (!canAccess(user, 'warehouse')) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const updates = {};
   if (status         !== undefined) updates.status         = status;
+  if (body.not_received !== undefined) updates.not_received = body.not_received;
   if (location       !== undefined) updates.location       = location;
   if (price          !== undefined) updates.price          = price ? parseFloat(price) : null;
   if (product_name   !== undefined) updates.product_name   = product_name;
