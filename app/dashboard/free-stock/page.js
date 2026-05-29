@@ -7,21 +7,43 @@ function useDebounce(v, d = 350) {
   return dv;
 }
 
+const COMPANY_LABELS = {
+  soma:     'Soma & Co.',
+  nalanda:  'Nalanda & Co.',
+  gangotri: 'Gangotri',
+};
+
+const COMPANY_COLORS = {
+  soma:     { background:'#e8f0fe', color:'#1a56db' },
+  nalanda:  { background:'#fef3c7', color:'#92400e' },
+  gangotri: { background:'#d1fae5', color:'#065f46' },
+};
+
+function CompanyBadge({ company }) {
+  const style = COMPANY_COLORS[company] || { background:'#f3f4f6', color:'#374151' };
+  return (
+    <span style={{ ...style, padding:'2px 8px', borderRadius:10, fontSize:11, fontWeight:600, whiteSpace:'nowrap' }}>
+      {COMPANY_LABELS[company] || company}
+    </span>
+  );
+}
+
 export default function FreeStockPage() {
-  const [view,      setView]      = useState('grouped'); // 'grouped' | 'list'
+  const [view,      setView]      = useState('grouped');
   const [items,     setItems]     = useState([]);
   const [total,     setTotal]     = useState(0);
   const [loading,   setLoading]   = useState(true);
   const [search,    setSearch]    = useState('');
   const [location,  setLocation]  = useState('');
+  const [company,   setCompany]   = useState('all'); // 'all' | 'soma' | 'nalanda' | 'gangotri'
   const [locations, setLocations] = useState([]);
   const debSearch = useDebounce(search);
 
-  useEffect(() => { load(); }, [debSearch, location, view]);
+  useEffect(() => { load(); }, [debSearch, location, company, view]);
 
   async function load() {
     setLoading(true);
-    const params = new URLSearchParams({ status: 'free', limit: '1000', pending: 'false' });
+    const params = new URLSearchParams({ status: 'free', limit: '1000', pending: 'false', company });
     if (debSearch) params.set('q', debSearch);
     if (location)  params.set('location', location);
 
@@ -29,45 +51,37 @@ export default function FreeStockPage() {
     const { data } = await res.json();
     const rows = data || [];
 
-    // Extract unique locations for filter
     setLocations([...new Set(rows.map(r => r.location).filter(Boolean))].sort());
 
     if (view === 'grouped') {
-      // Group by product_code, sum COALESCE(quantity,1)
-      // This handles both old model (qty=null, 1 row = 1 unit) and
-      // new model (qty=N, 1 row = N units from CSV import)
       const grouped = {};
       for (const row of rows) {
-        const key = row.product_code || row.product_name || row.id;
+        const key = (row.product_code || row.product_name || row.id) + '|' + row.company;
         if (!grouped[key]) {
           grouped[key] = {
-            product_code: row.product_code,
-            product_name: row.product_name,
+            product_code:  row.product_code,
+            product_name:  row.product_name,
+            company:       row.company,
             available_qty: 0,
-            price: row.price,
-            locations: new Set(),
-            invoice_number: row.invoice_number,
+            price:         row.price,
+            locations:     new Set(),
           };
         }
         grouped[key].available_qty += (row.quantity ?? 1);
         if (row.location) grouped[key].locations.add(row.location);
-        // Prefer row with price if current doesn't have one
         if (!grouped[key].price && row.price) grouped[key].price = row.price;
       }
 
-      const result = Object.values(grouped).map(g => ({
-        ...g, locations: [...g.locations].join(', ') || '—',
-      })).sort((a, b) => (a.product_name || '').localeCompare(b.product_name || ''));
+      const result = Object.values(grouped)
+        .map(g => ({ ...g, locations: [...g.locations].join(', ') || '—' }))
+        .sort((a, b) => (a.product_name || '').localeCompare(b.product_name || ''));
 
       setItems(result);
       setTotal(result.reduce((s, r) => s + r.available_qty, 0));
     } else {
-      // List view — show individual rows, each with its own quantity
-      const result = rows.map(r => ({
-        ...r,
-        available_qty: r.quantity ?? 1,
-        locations: r.location || '—',
-      })).sort((a, b) => (a.product_name || '').localeCompare(b.product_name || ''));
+      const result = rows
+        .map(r => ({ ...r, available_qty: r.quantity ?? 1, locations: r.location || '—' }))
+        .sort((a, b) => (a.product_name || '').localeCompare(b.product_name || ''));
       setItems(result);
       setTotal(result.reduce((s, r) => s + r.available_qty, 0));
     }
@@ -98,7 +112,16 @@ export default function FreeStockPage() {
 
       <div style={{ display:'flex', gap:10, marginBottom:14, flexWrap:'wrap' }}>
         <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search product…" style={{ maxWidth:260 }} />
+          placeholder="Search product…" style={{ maxWidth:240 }} />
+
+        {/* Company filter */}
+        <select value={company} onChange={e => setCompany(e.target.value)} style={{ maxWidth:180 }}>
+          <option value="all">All Companies</option>
+          <option value="soma">Soma &amp; Co.</option>
+          <option value="nalanda">Nalanda &amp; Co.</option>
+          <option value="gangotri">Gangotri</option>
+        </select>
+
         <select value={location} onChange={e => setLocation(e.target.value)} style={{ maxWidth:200 }}>
           <option value="">All locations</option>
           {locations.map(l => <option key={l} value={l}>{l}</option>)}
@@ -111,7 +134,8 @@ export default function FreeStockPage() {
           <thead>
             <tr>
               <th>Product Name</th>
-              <th>Product Code (LN)</th>
+              <th>LN Code</th>
+              <th>Company</th>
               <th style={{ textAlign:'right' }}>Available Qty</th>
               <th>Location</th>
               {view === 'list' && <th>Price (₹)</th>}
@@ -120,7 +144,7 @@ export default function FreeStockPage() {
           </thead>
           <tbody>
             {items.length === 0 && (
-              <tr><td colSpan={6} style={{ textAlign:'center', color:'var(--muted)', padding:24 }}>
+              <tr><td colSpan={7} style={{ textAlign:'center', color:'var(--muted)', padding:24 }}>
                 No free stock found.
               </td></tr>
             )}
@@ -130,6 +154,7 @@ export default function FreeStockPage() {
                 <td className="mono" style={{ fontSize:11, color:'var(--muted)' }}>
                   {item.product_code || '—'}
                 </td>
+                <td><CompanyBadge company={item.company} /></td>
                 <td style={{ textAlign:'right', fontFamily:'var(--font-mono)', fontSize:13,
                              fontWeight:700, color: item.available_qty > 0 ? 'var(--success)' : 'var(--danger)' }}>
                   {item.available_qty}
@@ -149,9 +174,11 @@ export default function FreeStockPage() {
           {items.length > 0 && (
             <tfoot>
               <tr style={{ borderTop:'2px solid var(--border)', fontWeight:700 }}>
-                <td colSpan={2} style={{ textAlign:'right', paddingRight:16, color:'var(--muted)', fontSize:12 }}>Total units:</td>
+                <td colSpan={3} style={{ textAlign:'right', paddingRight:16, color:'var(--muted)', fontSize:12 }}>
+                  Total units:
+                </td>
                 <td style={{ textAlign:'right', fontFamily:'var(--font-mono)' }}>{total}</td>
-                <td colSpan={view==='list'?3:1} />
+                <td colSpan={view==='list' ? 3 : 1} />
               </tr>
             </tfoot>
           )}
