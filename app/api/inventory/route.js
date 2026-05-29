@@ -21,12 +21,22 @@ export async function GET(request) {
   const offset   = parseInt(searchParams.get('offset') || '0');
   const pending  = searchParams.get('pending'); // 'true' | 'false' | null (all)
 
+  const companyParam = searchParams.get('company'); // 'all' | 'soma' | 'nalanda' | 'gangotri' | null
+
   let query = supabase
     .from('inventory')
     .select('*', { count: 'exact' })
-    .eq('company', user.company)
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
+
+  // 'all' = show every company (used by Free Stock); specific = filter to that company; default = user's own company
+  if (companyParam === 'all') {
+    // no company filter — intentionally show all
+  } else if (companyParam) {
+    query = query.eq('company', companyParam);
+  } else {
+    query = query.eq('company', user.company);
+  }
 
   if (status)   query = query.eq('status', status);
   if (location) query = query.eq('location', location);
