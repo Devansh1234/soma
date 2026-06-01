@@ -104,16 +104,50 @@ export async function POST(request) {
 
     await supabase.from('ChallanRecords').update({ status: 'rtc' }).eq('Challan Number', challanNumber);
 
-    // Dispatch linked inventory items
+    // Derive company from challan number prefix (needed for inventory queries)
+    const prefix = challanNumber.split('/')[0];
+    const cMap   = { SCC: 'soma', NCC: 'nalanda', GEC: 'gangotri' };
+    const compId = cMap[prefix] || user.company;
+
+    // ── FIFO inventory dispatch by LN code ───────────────────────────────────
+    const rtcProducts   = parseProductsString(challan['Products']);
+    const invWarnings   = [];
+
+    for (const product of rtcProducts) {
+      if (!product.ln_code) continue;
+      const needed = product.quantity;
+
+      // Fetch free items FIFO (oldest first)
+      const { data: freeItems } = await supabase
+        .from('inventory')
+        .select('id')
+        .eq('company', compId)
+        .eq('status', 'free')
+        .eq('product_code', product.ln_code)
+        .eq('pending_receipt', false)
+        .order('created_at', { ascending: true })
+        .limit(needed);
+
+      const available = freeItems?.length || 0;
+      if (available > 0) {
+        await supabase.from('inventory')
+          .update({ status: 'dispatched' })
+          .in('id', freeItems.map(i => i.id));
+      }
+      if (available < needed) {
+        const shortfall = needed - available;
+        invWarnings.push(`${product.ln_code}: needed ${needed}, dispatched ${available} (${shortfall} short)`);
+        console.warn(`[RTC inventory shortfall] ${product.ln_code} needed ${needed}, only ${available} free`);
+      }
+    }
+
+    // Also dispatch any explicitly linked IDs (legacy)
     const ids = challan.linked_inventory_ids;
     if (Array.isArray(ids) && ids.length) {
       await supabase.from('inventory').update({ status: 'dispatched' }).in('id', ids);
     }
 
     // Auto-deliver matching order items
-    const prefix = challanNumber.split('/')[0];
-    const cMap   = { SCC: 'soma', NCC: 'nalanda', GEC: 'gangotri' };
-    const compId = cMap[prefix] || user.company;
     await autoDeliverOrderItems(challan, compId);
 
     // RTC email
@@ -133,7 +167,7 @@ export async function POST(request) {
       await sendSystemEmail({
         companyEmail: company.defaultEmail,
         companyName:  company.name,
-        subject: `Challan Released — ${challanNumber} — ${challan['Customer Name']}`,
+        subject: `Challan Released — ${challanNumber} — ${challan['Customer Name']}${invWarnings.length ? ' ⚠ Stock Shortfall' : ''}`,
         htmlBody: emailWrapper({
           companyName: company.name,
           title:       'Challan Released to Customer',
@@ -146,6 +180,7 @@ export async function POST(request) {
             'Marked RTC by': user.name,
             'Timestamp':     new Date().toLocaleString('en-IN'),
             'Total Value':   `₹${total.toLocaleString('en-IN', { minimumFractionDigits:2 })}`,
+            ...(invWarnings.length ? { '⚠ Stock Shortfall': invWarnings.join(' | ') } : {}),
           },
           tableHtml,
           footer: 'Automated notification from Challan & Warehouse System',
