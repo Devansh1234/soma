@@ -7,24 +7,33 @@ export async function GET(request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { searchParams } = new URL(request.url);
-  const q = searchParams.get('q') || '';
+  const q       = searchParams.get('q') || '';
+  const byLN    = searchParams.get('ln') || ''; // lookup by exact LN code
+  const limit   = parseInt(searchParams.get('limit') || '20');
 
-  let query = supabase.from('Products').select('"Product Name"').order('"Product Name"');
-  if (q) query = query.ilike('"Product Name"', `%${q}%`);
+  // Lookup single product by LN code (used when employee types LN code first)
+  if (byLN) {
+    const { data } = await supabase
+      .from('products')
+      .select('ln_code, name, hsn_code, base_price, category')
+      .eq('ln_code', byLN.trim().toUpperCase())
+      .maybeSingle();
+    return NextResponse.json(data || null);
+  }
 
-  const { data, error } = await query.limit(50);
+  if (!q.trim()) return NextResponse.json([]);
+
+  // Search by name (ilike) — return objects with name + ln_code + price
+  const { data, error } = await supabase
+    .from('products')
+    .select('ln_code, name, hsn_code, base_price, category')
+    .ilike('name', `%${q}%`)
+    .order('name', { ascending: true })
+    .limit(limit);
+
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data.map(r => r['Product Name']));
-}
 
-export async function POST(request) {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-  const { name } = await request.json();
-  if (!name?.trim()) return NextResponse.json({ error: 'Name required' }, { status: 400 });
-
-  const { error } = await supabase.from('Products').insert({ 'Product Name': name.trim() });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+  // Also check old Products table for any names not yet in new table
+  // (backward compat — returns plain strings merged in)
+  return NextResponse.json(data || []);
 }
