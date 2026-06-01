@@ -67,7 +67,7 @@ function ProductWarning({ name }) {
   );
 }
 
-const emptyProduct = () => ({ name: '', price: '', quantity: 1 });
+const emptyProduct = () => ({ name: '', ln_code: '', price: '', quantity: 1 });
 
 const STATUS_META = {
   awaiting_delivery: { label: 'Awaiting Delivery', cls: 'badge-committed' },
@@ -592,6 +592,42 @@ export default function ChallanPage() {
   function setProductField(i, field, val) {
     setProducts(prev => prev.map((p, idx) => idx === i ? { ...p, [field]: val } : p));
   }
+
+  async function onProductSelect(i, nameVal) {
+    setProductField(i, 'name', nameVal);
+    try {
+      const res  = await fetch(`/api/products?q=${encodeURIComponent(nameVal)}&limit=1`);
+      const list = await res.json();
+      const match = Array.isArray(list) && list.find(p => p.name?.toLowerCase() === nameVal.toLowerCase());
+      if (match?.ln_code) {
+        setProducts(prev => prev.map((p, idx) => idx !== i ? p : {
+          ...p,
+          name:    match.name,
+          ln_code: match.ln_code,
+          price:   p.price || (match.base_price ? String(match.base_price) : p.price),
+        }));
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function onLNCodeChange(i, lnVal) {
+    const upper = lnVal.toUpperCase();
+    setProductField(i, 'ln_code', upper);
+    if (upper.length === 15) {
+      try {
+        const res     = await fetch(`/api/products?ln=${encodeURIComponent(upper)}`);
+        const product = await res.json();
+        if (product?.name) {
+          setProducts(prev => prev.map((p, idx) => idx !== i ? p : {
+            ...p,
+            ln_code: product.ln_code,
+            name:    p.name || product.name,
+            price:   p.price || (product.base_price ? String(product.base_price) : p.price),
+          }));
+        }
+      } catch { /* ignore */ }
+    }
+  }
   const total = products.reduce((s, p) => s + (parseFloat(p.price)||0)*(parseInt(p.quantity)||0), 0);
 
   async function handleGenerate(e) {
@@ -787,18 +823,29 @@ export default function ChallanPage() {
                     Products
                     <button type="button" className="btn btn-secondary btn-sm" onClick={() => setProducts(p => [...p, emptyProduct()])} disabled={products.length >= 10} title={products.length >= 10 ? "Maximum 10 items per challan" : ""}>+ Add Row{products.length >= 10 ? " (max)" : ` (${products.length}/10)`}</button>
                   </div>
-                  <div style={{ fontSize:11, color:'var(--muted)', marginBottom:8, display:'grid', gridTemplateColumns:'2fr 120px 70px 100px 30px', gap:6 }}>
+                  <div style={{ fontSize:11, color:'var(--muted)', marginBottom:8, display:'grid', gridTemplateColumns:'2fr 160px 120px 70px 100px 30px', gap:6 }}>
                     <span>Product Name <em>("Godrej " added automatically)</em></span>
+                    <span style={{ color:'var(--accent)' }}>LN Code <em>(optional)</em></span>
                     <span>Price (₹)</span><span>Qty</span><span>Total (₹)</span><span></span>
                   </div>
                   {products.map((p, i) => (
                     <div key={i} className="product-row">
                       <div>
-                        <Autocomplete value={p.name} onChange={v => setProductField(i,'name',v)} onSelect={v => setProductField(i,'name',v)}
-                          fetchFn={q => fetch(`/api/products?q=${encodeURIComponent(q)}`).then(r => r.json())}
+                        <Autocomplete value={p.name}
+                          onChange={v => setProductField(i,'name',v)}
+                          onSelect={v => onProductSelect(i, v)}
+                          fetchFn={q => fetch(`/api/products?q=${encodeURIComponent(q)}`).then(r => r.json()).then(list => Array.isArray(list) ? list.map(x => x.name || x) : list)}
                           placeholder="Search product…" maxLength={60} />
                         <ProductWarning name={p.name} />
                       </div>
+                      <input
+                        value={p.ln_code || ''}
+                        onChange={e => onLNCodeChange(i, e.target.value)}
+                        placeholder="e.g. 56101509SD00493"
+                        maxLength={15}
+                        style={{ fontFamily:'var(--font-mono)', fontSize:11,
+                          borderColor: p.ln_code?.length === 15 ? 'var(--success)' : undefined }}
+                        title="LN Code — auto-fills when product is selected" />
                       <input type="number" min="0" max="9999999" step="0.01" value={p.price}
                         onChange={e => setProductField(i,'price',e.target.value)} placeholder="0.00" />
                       <input type="number" min="1" max="9999" value={p.quantity}
