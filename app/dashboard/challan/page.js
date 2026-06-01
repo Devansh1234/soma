@@ -829,7 +829,7 @@ export default function ChallanPage() {
                     <span>Price (₹)</span><span>Qty</span><span>Total (₹)</span><span></span>
                   </div>
                   {products.map((p, i) => (
-                    <div key={i} className="product-row">
+                    <div key={i} className="product-row" style={{ display:"grid", gridTemplateColumns:"2fr 160px 120px 70px 100px 30px", gap:6, alignItems:"start" }}>
                       <div>
                         <Autocomplete value={p.name}
                           onChange={v => setProductField(i,'name',v)}
