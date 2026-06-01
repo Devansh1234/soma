@@ -95,8 +95,9 @@ export async function POST(request) {
     const pad          = n => String(n).padStart(2, '0');
     const generatedDT  = `${pad(now.getDate())}-${pad(now.getMonth()+1)}-${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
 
+    // Include LN code in brackets when available — enables RTC inventory dispatch
     const productsStr = products
-      .map(p => `${p.name} (Rs.${parseFloat(p.price).toFixed(2)} x ${p.quantity})`)
+      .map(p => `${p.name}${p.ln_code ? ' ['+p.ln_code.trim()+']' : ''} (Rs.${parseFloat(p.price).toFixed(2)} x ${p.quantity})`)
       .join('; ');
 
     // Save challan record
