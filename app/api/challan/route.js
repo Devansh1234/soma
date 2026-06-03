@@ -34,7 +34,8 @@ export async function GET(request) {
   const status   = searchParams.get('status')   || '';
   const monthNum = searchParams.get('month')    || '';
   const yearNum  = searchParams.get('year')     || '';
-  const unbilled = searchParams.get('unbilled') === '1';
+  const unbilled         = searchParams.get('unbilled') === '1';
+  const excludeInternal  = searchParams.get('exclude_internal') === '1';
 
   const company = getCompany(user.company);
   const prefix  = company?.prefix || '';
@@ -50,7 +51,8 @@ export async function GET(request) {
   if (status)   query = query.eq('status', status);
   if (monthNum) query = query.eq('month_num', parseInt(monthNum));
   if (yearNum)  query = query.eq('year_num',  parseInt(yearNum));
-  if (unbilled) query = query.or('invoice_reference.is.null,invoice_reference.eq.');
+  if (unbilled)        query = query.or('invoice_reference.is.null,invoice_reference.eq.');
+  if (excludeInternal) query = query.or('challan_type.is.null,challan_type.eq.customer');
 
   const { data, error, count } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
