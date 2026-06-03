@@ -334,9 +334,16 @@ function DispatchTab() {
 
   async function load() {
     setLoading(true);
-    const res = await fetch('/api/challan?status=awaiting_delivery&limit=200');
-    const { data } = await res.json();
-    setChallans(data || []);
+    const [custRes, intRes] = await Promise.all([
+      fetch('/api/challan?status=awaiting_delivery&limit=200'),
+      fetch('/api/internal-challan?status=awaiting_delivery&limit=200'),
+    ]);
+    const { data: custData } = await custRes.json();
+    const { data: intData  } = await intRes.json();
+    setChallans([
+      ...(custData || []).map(c => ({...c, _type:'customer'})),
+      ...(intData  || []).map(c => ({...c, _type:'internal'})),
+    ]);
     setLoading(false);
   }
 
@@ -350,12 +357,26 @@ function DispatchTab() {
     else { const d = await res.json(); setError(d.error); }
   }
 
+  async function releaseInternal(challanNumber) {
+    if (!confirm(`Release internal transfer ${challanNumber}? Inventory locations will be updated.`)) return;
+    const res = await fetch('/api/internal-challan/release', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ challanNumber }),
+    });
+    const d = await res.json();
+    if (res.ok) {
+      const warn = d.warnings?.length ? ` ⚠ ${d.warnings.length} shortfall(s).` : '';
+      setSuccess(`${challanNumber} released. Locations updated.${warn}`);
+      load();
+    } else { setError(d.error); }
+  }
+
   return (
     <div>
       {error   && <div className="alert alert-error">{error}</div>}
       {success && <div className="alert alert-success">{success}</div>}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
-        <h3 style={{ margin:0, fontSize:14 }}>Challans Awaiting Delivery ({challans.length})</h3>
+        <h3 style={{ margin:0, fontSize:14 }}>Pending Dispatch ({challans.length})</h3>
         <button className="btn btn-secondary btn-sm" onClick={load}>↻ Refresh</button>
       </div>
       {loading ? <div className="spinner" /> : (
@@ -386,9 +407,15 @@ function DispatchTab() {
                       <td className="mono" style={{ fontSize:10, color:'var(--muted)' }}>{c.ccid || '—'}</td>
                       <td style={{ fontSize:11, maxWidth:240, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c['Products']}</td>
                       <td>
-                        <button className="btn btn-primary btn-sm" onClick={() => markRTC(c['Challan Number'])}>
-                          ✓ Mark RTC
-                        </button>
+                        {c._type === 'internal' ? (
+                          <button className="btn btn-secondary btn-sm" onClick={() => releaseInternal(c['Challan Number'])}>
+                            📦 Release Transfer
+                          </button>
+                        ) : (
+                          <button className="btn btn-primary btn-sm" onClick={() => markRTC(c['Challan Number'])}>
+                            ✓ Mark RTC
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );
@@ -669,6 +696,277 @@ function InventoryTab() {
   );
 }
 
+// ── INTERNAL TRANSFER TAB ────────────────────────────────────────────────────
+const WAREHOUSES   = ['Bhelupur Warehouse','Lehertara Warehouse','Rohaniya Warehouse'];
+const DESTINATIONS = ['Soma Showroom','Sunderpur Showroom','Bhelupur Warehouse','Lehertara Warehouse','Rohaniya Warehouse'];
+
+function InternalTransferTab() {
+  const emptyRow = () => ({ name:'', ln_code:'', price:'', quantity:1 });
+  const [sourceWH,     setSourceWH]     = useState(WAREHOUSES[0]);
+  const [destLoc,      setDestLoc]      = useState(DESTINATIONS[0]);
+  const [requestedBy,  setRequestedBy]  = useState('');
+  const [isDisplay,    setIsDisplay]    = useState(false);
+  const [products,     setProducts]     = useState([emptyRow()]);
+  const [preview,      setPreview]      = useState('');
+  const [submitting,   setSubmitting]   = useState(false);
+  const [generated,    setGenerated]    = useState(null);
+  const [error,        setError]        = useState('');
+  const [history,      setHistory]      = useState([]);
+
+  useEffect(() => { loadPreview(); loadHistory(); }, [sourceWH]);
+
+  async function loadPreview() {
+    const res = await fetch(`/api/internal-challan/preview?warehouse=${encodeURIComponent(sourceWH)}`);
+    const d   = await res.json();
+    setPreview(d.preview || '');
+  }
+
+  async function loadHistory() {
+    const res = await fetch('/api/internal-challan?limit=30');
+    const d   = await res.json();
+    setHistory(d.data || []);
+  }
+
+  function setField(i, field, val) {
+    setProducts(prev => prev.map((p,idx) => idx===i ? {...p,[field]:val} : p));
+  }
+
+  async function onProductSelect(i, nameVal) {
+    setField(i, 'name', nameVal);
+    try {
+      const list = await fetch(`/api/products?q=${encodeURIComponent(nameVal)}&limit=1`).then(r=>r.json());
+      const match = Array.isArray(list) && list.find(p=>p.name?.toLowerCase()===nameVal.toLowerCase());
+      if (match?.ln_code) setProducts(prev=>prev.map((p,idx)=>idx!==i?p:{...p,name:match.name,ln_code:match.ln_code,price:p.price||(match.base_price?String(match.base_price):p.price)}));
+    } catch {}
+  }
+
+  async function onLNChange(i, val) {
+    setField(i,'ln_code',val.toUpperCase());
+    if (val.length===15) {
+      try {
+        const prod = await fetch(`/api/products?ln=${encodeURIComponent(val.toUpperCase())}`).then(r=>r.json());
+        if (prod?.name) setProducts(prev=>prev.map((p,idx)=>idx!==i?p:{...p,ln_code:prod.ln_code,name:p.name||prod.name,price:p.price||(prod.base_price?String(prod.base_price):p.price)}));
+      } catch {}
+    }
+  }
+
+  async function handleGenerate() {
+    const valid = products.filter(p=>p.name.trim());
+    if (!valid.length) { setError('Add at least one product.'); return; }
+    setSubmitting(true); setError('');
+    const res = await fetch('/api/internal-challan', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ sourceWarehouse:sourceWH, destinationLocation:destLoc,
+        requestedBy, isDisplay, products:valid }),
+    });
+    const data = await res.json();
+    setSubmitting(false);
+    if (res.ok) {
+      setGenerated(data);
+      generateInternalPDF(data);
+      loadPreview(); loadHistory();
+      setProducts([emptyRow()]); setRequestedBy(''); setIsDisplay(false);
+    } else { setError(data.error); }
+  }
+
+  async function generateInternalPDF(challan, download=true) {
+    const { default: jsPDF } = await import('jspdf');
+    const doc = new jsPDF({ unit:'pt', format:'a4' });
+    const W = 595.28, margin = 35;
+    const bw = W - 2*margin;
+
+    // Logo (reuse from challan page — fallback to text if not available)
+    try {
+      const logoRes = await fetch('/logo-base64');
+      // Logo loading handled separately; fall back to text
+    } catch {}
+
+    doc.setFontSize(9).setFont('helvetica','normal').setTextColor(100);
+    doc.text('Godrej Interio', W/2, 85, { align:'center' });
+
+    // Outer box
+    doc.setDrawColor(0).setLineWidth(0.75);
+    doc.rect(margin, 120, bw, 680);
+
+    // Title
+    doc.setFontSize(14).setFont('helvetica','bold').setTextColor(0);
+    doc.text('INTERNAL TRANSFER CHALLAN', W/2, 148, { align:'center' });
+
+    // Divider
+    doc.setLineWidth(0.5).line(margin, 158, margin+bw, 158);
+
+    // From / challan info block
+    const leftX = margin+10, rightX = margin+bw/2+10;
+    let y = 175;
+    doc.setFontSize(10).setFont('helvetica','bold');
+    doc.text(challan.sourceWarehouse || '', leftX, y);
+    doc.setFont('helvetica','normal').setFontSize(9);
+
+    doc.setFont('helvetica','normal').setFontSize(9);
+    doc.text(`Challan No: ${challan.challanNumber}`, rightX, y);
+    doc.text(`Date: ${challan.challanDate}`, rightX, y+13);
+
+    y += 30;
+    doc.setLineWidth(0.4).line(margin, y, margin+bw, y);
+
+    // To / details block
+    y += 15;
+    doc.setFont('helvetica','bold').setFontSize(10);
+    doc.text(`To: ${challan.destinationLocation}`, leftX, y);
+    y += 14;
+    doc.setFont('helvetica','normal').setFontSize(9);
+    if (challan.requestedBy) doc.text(`Requested by: ${challan.requestedBy}`, leftX, y);
+    doc.text(`Display Item: ${challan.isDisplay ? 'Yes' : 'No'}`, rightX, y);
+
+    y += 20;
+    doc.setLineWidth(0.4).line(margin, y, margin+bw, y);
+
+    // Products table header
+    y += 15;
+    const colW = [30, bw-30-160-80, 160, 80];
+    const colX = [margin+5, margin+35, margin+35+colW[1], margin+35+colW[1]+160];
+    doc.setFont('helvetica','bold').setFontSize(9);
+    ['Sr.','Description','LN Code','Qty'].forEach((h,i) => doc.text(h, colX[i], y));
+    y += 3;
+    doc.setLineWidth(0.4).line(margin, y, margin+bw, y);
+    y += 12;
+
+    doc.setFont('helvetica','normal').setFontSize(9);
+    (challan.products||[]).forEach((p,i) => {
+      doc.text(String(i+1)+'.', colX[0], y);
+      const descLines = doc.splitTextToSize('Godrej '+p.name, colW[1]-10);
+      doc.text(descLines, colX[1], y);
+      doc.text(p.ln_code||'—', colX[2], y);
+      doc.text(String(p.quantity), colX[3], y);
+      y += Math.max(descLines.length*11, 13);
+    });
+
+    // Footer line
+    const footerY = 120+680-90;
+    doc.setLineWidth(0.4).line(margin, footerY, margin+bw, footerY);
+    doc.setFontSize(8).setTextColor(100);
+    doc.text('All the listed items have been received in order and good condition.', W/2, footerY+12, { align:'center' });
+
+    // Signature boxes
+    const sigW = bw/3;
+    const sigY = footerY+20;
+    ['Received in Good Condition','For Internal Use','Goods Transporter'].forEach((label,i) => {
+      const sx = margin + i*sigW;
+      doc.setDrawColor(180).rect(sx, sigY, sigW, 70);
+      doc.setTextColor(100).setFontSize(7);
+      doc.text(label, sx+sigW/2, sigY+62, { align:'center' });
+    });
+
+    if (download) doc.save(`${challan.challanNumber.replace(/\//g,'-')}.pdf`);
+    return doc.output('datauristring').split(',')[1];
+  }
+
+  const pending = history.filter(c=>c.status==='awaiting_delivery');
+  const released = history.filter(c=>c.status==='rtc');
+
+  return (
+    <div>
+      {error && <div className="alert alert-error">{error}</div>}
+      {generated && <div className="alert alert-success">✓ {generated.challanNumber} created. PDF downloaded.</div>}
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:20 }}>
+        {/* Form */}
+        <div className="card">
+          <div className="card-title" style={{ display:'flex', justifyContent:'space-between' }}>
+            New Internal Transfer
+            {preview && <span style={{ fontFamily:'var(--font-mono)', fontSize:12, color:'var(--muted)' }}>Next: {preview}</span>}
+          </div>
+
+          <div className="form-group">
+            <label>From (Source Warehouse)</label>
+            <select value={sourceWH} onChange={e=>{setSourceWH(e.target.value);}}>
+              {WAREHOUSES.map(w=><option key={w} value={w}>{w}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label>To (Destination)</label>
+            <select value={destLoc} onChange={e=>setDestLoc(e.target.value)}>
+              {DESTINATIONS.map(d=><option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Requested By</label>
+            <input value={requestedBy} onChange={e=>setRequestedBy(e.target.value)} placeholder="Name of person requesting" />
+          </div>
+          <div className="form-group" style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
+            <input type="checkbox" checked={isDisplay} onChange={e=>setIsDisplay(e.target.checked)} style={{ width:'auto' }} id="isDisplayChk" />
+            <label htmlFor="isDisplayChk" style={{ margin:0 }}>For Showroom Display (item stays in free stock)</label>
+          </div>
+
+          {/* Product rows */}
+          <div style={{ marginTop:12 }}>
+            <div style={{ display:'grid', gridTemplateColumns:'2fr 140px 80px 40px', gap:4, fontSize:11, color:'var(--muted)', marginBottom:4 }}>
+              <span>Product Name</span><span>LN Code</span><span>Qty</span><span></span>
+            </div>
+            {products.map((p,i)=>(
+              <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 140px 80px 40px', gap:4, marginBottom:4 }}>
+                <input value={p.name} onChange={e=>setField(i,'name',e.target.value)}
+                  onBlur={e=>onProductSelect(i,e.target.value)} placeholder="Product name…" />
+                <input value={p.ln_code||''} onChange={e=>onLNChange(i,e.target.value)}
+                  placeholder="LN Code" maxLength={15}
+                  style={{ fontFamily:'var(--font-mono)', fontSize:11 }} />
+                <input type="number" min={1} value={p.quantity} onChange={e=>setField(i,'quantity',parseInt(e.target.value)||1)} />
+                <button onClick={()=>setProducts(prev=>prev.filter((_,idx)=>idx!==i))}
+                  style={{ background:'none', border:'none', cursor:'pointer', color:'var(--danger)', fontSize:16 }}>×</button>
+              </div>
+            ))}
+            <button className="btn btn-secondary btn-sm" style={{ marginTop:6 }}
+              onClick={()=>setProducts(prev=>[...prev,emptyRow()])}>+ Add Row</button>
+          </div>
+
+          <button className="btn btn-primary" style={{ marginTop:16, width:'100%' }}
+            onClick={handleGenerate} disabled={submitting}>
+            {submitting ? 'Generating…' : '⚡ Generate Internal Challan'}
+          </button>
+        </div>
+
+        {/* History */}
+        <div>
+          {pending.length > 0 && (
+            <div className="card" style={{ marginBottom:14 }}>
+              <div className="card-title" style={{ color:'var(--warn)' }}>⏳ Pending Release ({pending.length})</div>
+              <table>
+                <thead><tr><th>Challan No.</th><th>To</th><th>Date</th></tr></thead>
+                <tbody>
+                  {pending.map((c,i)=>(
+                    <tr key={i}>
+                      <td className="mono" style={{ fontSize:11 }}>{c['Challan Number']}</td>
+                      <td>{c.destination_location}</td>
+                      <td style={{ fontSize:11 }}>{c['Generated DateTime']?.split(' ')[0]}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {released.length > 0 && (
+            <div className="card">
+              <div className="card-title">✓ Recently Released</div>
+              <table>
+                <thead><tr><th>Challan No.</th><th>To</th><th>Display</th></tr></thead>
+                <tbody>
+                  {released.slice(0,10).map((c,i)=>(
+                    <tr key={i}>
+                      <td className="mono" style={{ fontSize:11 }}>{c['Challan Number']}</td>
+                      <td style={{ fontSize:12 }}>{c.destination_location}</td>
+                      <td style={{ fontSize:11, color: c.is_display?'var(--success)':'var(--muted)' }}>{c.is_display?'Yes':'—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Warehouse Page ───────────────────────────────────────────────────────
 export default function WarehousePage() {
   const [tab, setTab]                     = useState('receive');
@@ -688,16 +986,18 @@ export default function WarehousePage() {
         active={tab}
         onChange={setTab}
         tabs={[
-          ['receive',     'Receive Stock',  pendingReceiptCount || null],
-          ['dispatch',    'Dispatch',       pendingChallanCount || null],
-          ['inventory',   'Inventory',      null],
-          ['adjustments', 'Adjustments',    null],
+          ['receive',    'Receive Stock',      pendingReceiptCount || null],
+          ['dispatch',   'Dispatch',           pendingChallanCount || null],
+          ['internal',   'Internal Transfer',  null],
+          ['inventory',  'Inventory',          null],
+          ['adjustments','Adjustments',        null],
         ]}
       />
       {tab === 'receive'     && <ReceiveStockTab />}
       {tab === 'dispatch'    && <DispatchTab />}
       {tab === 'inventory'   && <InventoryTab />}
       {tab === 'adjustments' && <AdjustmentsTab />}
+      {tab === 'internal'    && <InternalTransferTab />}
     </div>
   );
 }
