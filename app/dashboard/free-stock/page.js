@@ -29,6 +29,7 @@ function CompanyBadge({ company }) {
 }
 
 export default function FreeStockPage() {
+  const [user,      setUser]      = useState(null);
   const [view,      setView]      = useState('grouped');
   const [items,     setItems]     = useState([]);
   const [total,     setTotal]     = useState(0);
@@ -39,6 +40,7 @@ export default function FreeStockPage() {
   const [locations, setLocations] = useState([]);
   const debSearch = useDebounce(search);
 
+  useEffect(() => { fetch('/api/auth/me').then(r=>r.json()).then(setUser); }, []);
   useEffect(() => { load(); }, [debSearch, location, company, view]);
 
   async function load() {
@@ -138,7 +140,7 @@ export default function FreeStockPage() {
               <th>Company</th>
               <th style={{ textAlign:'right' }}>Available Qty</th>
               <th>Location</th>
-              {view === 'list' && <th>Price (₹)</th>}
+              {view === 'list' && user?.role === 'owner' && <th>Price (₹)</th>}
               {view === 'list' && <th>Invoice No.</th>}
             </tr>
           </thead>
@@ -160,7 +162,7 @@ export default function FreeStockPage() {
                   {item.available_qty}
                 </td>
                 <td style={{ fontSize:12, color:'var(--muted)' }}>{item.locations}</td>
-                {view === 'list' && (
+                {view === 'list' && user?.role === 'owner' && (
                   <td style={{ textAlign:'right', fontFamily:'var(--font-mono)', fontSize:12 }}>
                     {item.price ? Number(item.price).toLocaleString('en-IN', { minimumFractionDigits:2 }) : '—'}
                   </td>
@@ -178,7 +180,7 @@ export default function FreeStockPage() {
                   Total units:
                 </td>
                 <td style={{ textAlign:'right', fontFamily:'var(--font-mono)' }}>{total}</td>
-                <td colSpan={view==='list' ? 3 : 1} />
+                <td colSpan={view==='list' ? (user?.role==='owner' ? 3 : 2) : 1} />
               </tr>
             </tfoot>
           )}
