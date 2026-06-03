@@ -49,7 +49,11 @@ export async function GET(request) {
 
   const { data, error, count } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ data, count });
+
+  // Strip price from non-owner responses (cost price is confidential)
+  const isOwner = user.role === 'owner';
+  const safeData = isOwner ? data : (data || []).map(({ price, ...rest }) => rest);
+  return NextResponse.json({ data: safeData, count });
 }
 
 export async function POST(request) {
