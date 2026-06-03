@@ -504,6 +504,7 @@ export default function ChallanPage() {
   const [error,            setError]            = useState('');
   const [success,          setSuccess]          = useState('');
   const [generatedChallan, setGeneratedChallan] = useState(null);
+  const [showInternal,     setShowInternal]     = useState(false);
   const [emailStatus,      setEmailStatus]      = useState(''); // 'sending'|'sent'|'failed:...'|''
   const [records,          setRecords]          = useState([]);
   const [recordsCount,     setRecordsCount]     = useState(0);
@@ -542,16 +543,17 @@ export default function ChallanPage() {
       .catch(() => setPreviewNumber('?'));
   }, [companyId, activeTab]);
 
-  useEffect(() => { if (activeTab === 'records') loadRecords(); }, [activeTab, debRecSearch, recStatus, recMonth, recYear]);
+  useEffect(() => { if (activeTab === 'records') loadRecords(); }, [activeTab, debRecSearch, recStatus, recMonth, recYear, showInternal]);
   useEffect(() => { if (activeTab === 'unbilled') loadUnbilled(); }, [activeTab]);
 
   async function loadRecords() {
     setRecLoading(true);
     const params = new URLSearchParams({ limit: '200' });
-    if (debRecSearch) params.set('search', debRecSearch);
-    if (recStatus)    params.set('status', recStatus);
-    if (recMonth)     params.set('month',  recMonth);
-    if (recYear)      params.set('year',   recYear);
+    if (debRecSearch)  params.set('search', debRecSearch);
+    if (recStatus)     params.set('status', recStatus);
+    if (recMonth)      params.set('month',  recMonth);
+    if (recYear)       params.set('year',   recYear);
+    if (!showInternal) params.set('exclude_internal', '1');
     const res = await fetch(`/api/challan?${params}`);
     const { data, count } = await res.json();
     setRecords(data || []); setRecordsCount(count || 0); setRecLoading(false);
@@ -905,6 +907,12 @@ export default function ChallanPage() {
             <span><span className="badge badge-committed">Awaiting Delivery</span></span>
             <span><span className="badge badge-confirmed">Released to Customer</span></span>
             <span><span className="badge badge-cancelled">Cancelled</span></span>
+          </div>
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10, padding:'6px 10px', background:'#f5f5f2', border:'1px solid var(--border)', borderRadius:2, fontSize:12 }}>
+            <input type="checkbox" id="showInternalChk" checked={showInternal} onChange={e=>setShowInternal(e.target.checked)} style={{ width:'auto' }} />
+            <label htmlFor="showInternalChk" style={{ margin:0, cursor:'pointer', color:'var(--muted)' }}>
+              Show internal transfer challans
+            </label>
           </div>
           <RecordsTable rows={records} user={user} onAction={handleLifecycleAction} loading={recLoading} />
         </div>
