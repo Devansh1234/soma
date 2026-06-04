@@ -103,6 +103,137 @@ function FlatTable({ items, columns, renderRow }) {
     );
 }
 
+// ── Pending Delivery Table with manual Mark Delivered ─────────────────────────
+function PendingDeliveryTable({ items, onDelivered, onError }) {
+  const [activeRow,  setActiveRow]  = useState(null); // item id being marked
+  const [challanNo,  setChallanNo]  = useState('');
+  const [billNo,     setBillNo]     = useState('');
+  const [delivQty,   setDelivQty]   = useState(1);
+  const [saving,     setSaving]     = useState(false);
+
+  function openForm(item) {
+    setActiveRow(item.id);
+    setChallanNo('');
+    setBillNo('');
+    setDelivQty(item.ordered_qty - item.delivered_qty);
+  }
+
+  function closeForm() { setActiveRow(null); }
+
+  async function confirmDelivery(item) {
+    if (!challanNo.trim()) { onError('Challan number is required.'); return; }
+    setSaving(true);
+    const remaining    = item.ordered_qty - item.delivered_qty;
+    const qty          = Math.min(Math.max(1, parseInt(delivQty)||1), remaining);
+    const newDelivered = item.delivered_qty + qty;
+    const fullyDone    = newDelivered >= item.ordered_qty;
+
+    const updates = {
+      delivered_qty:  newDelivered,
+      status:         fullyDone ? 'delivered' : 'pending_delivery',
+      challan_refs:   [...(item.challan_refs||[]), challanNo.trim()],
+      bill_numbers:   billNo.trim() ? [...(item.bill_numbers||[]), billNo.trim()] : item.bill_numbers,
+      delivered_at:   fullyDone ? new Date().toISOString() : null,
+    };
+
+    const res = await fetch('/api/inventory', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: item.id, ...updates }),
+    });
+
+    // Use the order_items table directly via the orders action route
+    const res2 = await fetch('/api/orders/mark-delivered', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        itemId:      item.id,
+        deliveredQty: qty,
+        challanNo:   challanNo.trim(),
+        billNo:      billNo.trim(),
+      }),
+    });
+
+    setSaving(false);
+    if (res2.ok) { closeForm(); onDelivered(); }
+    else { const d = await res2.json(); onError(d.error || 'Failed to mark delivered'); }
+  }
+
+  if (!items.length) return <p style={{ color:'var(--muted)', fontSize:13 }}>No items pending delivery.</p>;
+
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>Retailer</th><th>Product</th><th>LN Code</th>
+          <th>Ordered</th><th>Delivered</th><th>Remaining</th>
+          <th>Booked On</th><th>SO Number</th><th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((item, i) => {
+          const remaining = item.ordered_qty - item.delivered_qty;
+          const isActive  = activeRow === item.id;
+          return (
+            <>
+              <tr key={item.id} style={{ background: isActive ? '#f0f7ff' : undefined }}>
+                <td><strong>{item.retailer_name}</strong></td>
+                <td>{item.product_name}</td>
+                <td className="mono" style={{fontSize:11}}>{item.ln_code||'—'}</td>
+                <td>{item.ordered_qty}</td>
+                <td>{item.delivered_qty}</td>
+                <td><strong style={{color: remaining>0 ? 'var(--warn)' : 'var(--success)'}}>{remaining}</strong></td>
+                <td style={{fontSize:12}}>{fmtDate(item.booked_at)}</td>
+                <td className="mono" style={{fontSize:11}}>{item.so_number||'—'}</td>
+                <td>
+                  {isActive ? (
+                    <button className="btn btn-secondary btn-sm" onClick={closeForm}>Cancel</button>
+                  ) : (
+                    <button className="btn btn-primary btn-sm" onClick={() => openForm(item)}>
+                      ✓ Mark Delivered
+                    </button>
+                  )}
+                </td>
+              </tr>
+              {isActive && (
+                <tr key={item.id+'_form'} style={{ background:'#f0f7ff' }}>
+                  <td colSpan={9} style={{ padding:'10px 12px' }}>
+                    <div style={{ display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap' }}>
+                      <div className="form-group" style={{ margin:0, minWidth:200 }}>
+                        <label style={{ fontSize:11 }}>Challan No. *</label>
+                        <input value={challanNo} onChange={e=>setChallanNo(e.target.value)}
+                          placeholder="SCC/2026/05/115" style={{ minWidth:180 }} />
+                      </div>
+                      <div className="form-group" style={{ margin:0, minWidth:180 }}>
+                        <label style={{ fontSize:11 }}>Bill / Invoice No.</label>
+                        <input value={billNo} onChange={e=>setBillNo(e.target.value)}
+                          placeholder="SCI/2025-26/1252" style={{ minWidth:160 }} />
+                      </div>
+                      {remaining > 1 && (
+                        <div className="form-group" style={{ margin:0, width:100 }}>
+                          <label style={{ fontSize:11 }}>Qty Delivered</label>
+                          <input type="number" min={1} max={remaining} value={delivQty}
+                            onChange={e=>setDelivQty(e.target.value)} />
+                        </div>
+                      )}
+                      <button className="btn btn-primary" onClick={() => confirmDelivery(item)} disabled={saving}>
+                        {saving ? 'Saving…' : `✓ Confirm (${Math.min(delivQty||remaining,remaining)} of ${remaining})`}
+                      </button>
+                    </div>
+                    {remaining > 1 && parseInt(delivQty) < remaining && (
+                      <p style={{ fontSize:11, color:'var(--muted)', marginTop:6 }}>
+                        Partial delivery — {remaining - (parseInt(delivQty)||0)} unit(s) will remain pending.
+                      </p>
+                    )}
+                  </td>
+                </tr>
+              )}
+            </>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
 export default function OrderManagementPage() {
   const [user,    setUser]    = useState(null);
   const [orders,  setOrders]  = useState([]);
@@ -199,21 +330,10 @@ export default function OrderManagementPage() {
           )}
 
           {tab === 'pending_delivery' && (
-            <FlatTable
+            <PendingDeliveryTable
               items={flatItems(pendingDelivery, 'pending_delivery')}
-              columns={['Retailer','Product','LN Code','Ordered','Delivered','Remaining','Booked On','SO Number']}
-              renderRow={i => [
-                <strong>{i.retailer_name}</strong>,
-                i.product_name,
-                <span className="mono" style={{fontSize:11}}>{i.ln_code||'—'}</span>,
-                i.ordered_qty,
-                i.delivered_qty,
-                <strong style={{color: i.ordered_qty-i.delivered_qty>0 ? 'var(--warn)' : 'var(--success)'}}>
-                  {i.ordered_qty - i.delivered_qty}
-                </strong>,
-                fmtDate(i.booked_at),
-                <span className="mono" style={{fontSize:11}}>{i.so_number||'—'}</span>,
-              ]}
+              onDelivered={() => { setSuccess('Item marked as delivered.'); loadOrders(); }}
+              onError={setError}
             />
           )}
 
