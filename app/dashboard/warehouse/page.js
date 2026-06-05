@@ -335,7 +335,7 @@ function DispatchTab() {
   async function load() {
     setLoading(true);
     const [custRes, intRes] = await Promise.all([
-      fetch('/api/challan?status=awaiting_delivery&company=all&limit=200'),
+      fetch('/api/challan?status=awaiting_delivery&company=all&exclude_internal=1&limit=200'),
       fetch('/api/internal-challan?status=awaiting_delivery&limit=200'),
     ]);
     const { data: custData } = await custRes.json();
