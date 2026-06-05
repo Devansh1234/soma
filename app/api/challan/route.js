@@ -37,15 +37,20 @@ export async function GET(request) {
   const unbilled         = searchParams.get('unbilled') === '1';
   const excludeInternal  = searchParams.get('exclude_internal') === '1';
 
+  const companyParam = searchParams.get('company'); // 'all' skips prefix filter (warehouse view)
   const company = getCompany(user.company);
   const prefix  = company?.prefix || '';
 
   let query = supabase
     .from('ChallanRecords')
     .select('*', { count: 'exact' })
-    .like('Challan Number', `${prefix}/%`)
     .order('Challan Number', { ascending: false })
     .range(offset, offset + limit - 1);
+
+  // Skip prefix filter when company=all (shared warehouse sees all companies)
+  if (companyParam !== 'all') {
+    query = query.like('Challan Number', `${prefix}/%`);
+  }
 
   if (search)   query = query.or(`"Customer Name".ilike.%${search}%,"Challan Number".ilike.%${search}%,ccid.ilike.%${search}%`);
   if (status)   query = query.eq('status', status);
