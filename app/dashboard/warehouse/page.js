@@ -43,7 +43,7 @@ function ReceiveStockTab({ company }) {
   const [notReceivedItems, setNRI] = useState([]);
 
   async function loadNotReceived() {
-    const res = await fetch('/api/inventory?pending=true&not_received=true&limit=200');
+    const res = await fetch('/api/inventory?pending=true&not_received=true&company=all&limit=200');
     const { data } = await res.json();
     setNRI(data || []);
   }
@@ -70,7 +70,7 @@ function ReceiveStockTab({ company }) {
 
   async function loadPending() {
     setPendingLoading(true);
-    const res = await fetch('/api/inventory?pending=true&not_received=false&limit=200');
+    const res = await fetch('/api/inventory?pending=true&not_received=false&company=all&limit=200');
     const { data } = await res.json();
     setPendingItems(data || []);
     setPendingLoading(false);
@@ -335,7 +335,7 @@ function DispatchTab() {
   async function load() {
     setLoading(true);
     const [custRes, intRes] = await Promise.all([
-      fetch('/api/challan?status=awaiting_delivery&limit=200'),
+      fetch('/api/challan?status=awaiting_delivery&company=all&limit=200'),
       fetch('/api/internal-challan?status=awaiting_delivery&limit=200'),
     ]);
     const { data: custData } = await custRes.json();
@@ -975,8 +975,8 @@ export default function WarehousePage() {
 
   useEffect(() => {
     // Badge counts
-    fetch('/api/challan?status=awaiting_delivery&limit=1').then(r=>r.json()).then(d => setPCC(d.count||0));
-    fetch('/api/inventory?pending=true&limit=1').then(r=>r.json()).then(d => setPRC(d.count||0));
+    fetch('/api/challan?status=awaiting_delivery&company=all&limit=1').then(r=>r.json()).then(d => setPCC(d.count||0));
+    fetch('/api/inventory?pending=true&company=all&limit=1').then(r=>r.json()).then(d => setPRC(d.count||0));
   }, []);
 
   return (
