@@ -149,7 +149,8 @@ export async function PATCH(request) {
   if (invoice_number !== undefined) updates.invoice_number = invoice_number;
   if (invoice_date   !== undefined) updates.invoice_date   = invoice_date;
 
-  const { error } = await supabase.from('inventory').update(updates).eq('id', id).eq('company', user.company);
+  // No company restriction — warehouse is shared across companies
+  const { error } = await supabase.from('inventory').update(updates).eq('id', id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
 }
@@ -170,7 +171,8 @@ export async function DELETE(request) {
   // Fetch item before deleting (for email)
   const { data: item } = await supabase.from('inventory').select('*').eq('id', id).single();
 
-  const { error } = await supabase.from('inventory').delete().eq('id', id).eq('company', user.company);
+  // No company restriction — warehouse is shared
+  const { error } = await supabase.from('inventory').delete().eq('id', id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   // ── Email on manual remove ─────────────────────────────────────────────────
