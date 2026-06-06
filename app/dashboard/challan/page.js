@@ -505,6 +505,7 @@ export default function ChallanPage() {
   const [success,          setSuccess]          = useState('');
   const [generatedChallan, setGeneratedChallan] = useState(null);
   const [showInternal,     setShowInternal]     = useState(false);
+  const [challanDate,      setChallanDate]      = useState(() => new Date().toISOString().split('T')[0]);
   const [emailStatus,      setEmailStatus]      = useState(''); // 'sending'|'sent'|'failed:...'|''
   const [records,          setRecords]          = useState([]);
   const [recordsCount,     setRecordsCount]     = useState(0);
@@ -533,6 +534,18 @@ export default function ChallanPage() {
   useEffect(() => {
     fetch('/api/auth/me').then(r => r.json()).then(u => { setUser(u); setCompanyId(u.company); });
   }, []);
+
+  async function saveProduct(p) {
+    if (!p.name?.trim()) return;
+    const res = await fetch('/api/products', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: p.name, ln_code: p.ln_code || null, base_price: p.price || null }),
+    });
+    const d = await res.json();
+    if (res.ok && !d.skipped) setSuccess(`"${p.name}" added to product list.`);
+    else if (d.skipped)       setSuccess(`"${p.name}" already in product list.`);
+    else                      setError(d.error);
+  }
 
   useEffect(() => {
     if (!companyId || activeTab !== 'new') return;
@@ -645,6 +658,7 @@ export default function ChallanPage() {
         body: JSON.stringify({
           companyOverride: companyId, orderReference: orderRef, orderDate,
           invoiceReference: invoiceRef, invoiceDated: invoiceDate,
+          challanDate,
           customer: { name: customerName, gstin: customerGstin, address1: customerAddr1, address2: customerAddr2, mobile: customerMobile, save: saveCustomer },
           products: valid,
         }),
@@ -802,6 +816,11 @@ export default function ChallanPage() {
                   <div className="card-title">Order &amp; Invoice Details</div>
                   <div className="form-grid">
                     <div className="form-group">
+                      <label>Challan Date</label>
+                      <input type="date" value={challanDate} onChange={e => setChallanDate(e.target.value)} />
+                    </div>
+                    <div className="form-group" /> {/* spacer */}
+                    <div className="form-group">
                       <label>Order Reference</label>
                       <input value={orderRef} onChange={e => setOrderRef(e.target.value)} placeholder="SCI/2026-27/001" maxLength={20} />
                     </div>
@@ -825,13 +844,13 @@ export default function ChallanPage() {
                     Products
                     <button type="button" className="btn btn-secondary btn-sm" onClick={() => setProducts(p => [...p, emptyProduct()])} disabled={products.length >= 10} title={products.length >= 10 ? "Maximum 10 items per challan" : ""}>+ Add Row{products.length >= 10 ? " (max)" : ` (${products.length}/10)`}</button>
                   </div>
-                  <div style={{ fontSize:11, color:'var(--muted)', marginBottom:8, display:'grid', gridTemplateColumns:'2fr 160px 120px 70px 100px 30px', gap:6 }}>
+                  <div style={{ fontSize:11, color:'var(--muted)', marginBottom:8, display:'grid', gridTemplateColumns:'2fr 160px 120px 70px 100px 28px 28px', gap:6 }}>
                     <span>Product Name <em>("Godrej " added automatically)</em></span>
                     <span style={{ color:'var(--accent)' }}>LN Code <em>(optional)</em></span>
-                    <span>Price (₹)</span><span>Qty</span><span>Total (₹)</span><span></span>
+                    <span>Price (₹)</span><span>Qty</span><span>Total (₹)</span><span></span><span></span>
                   </div>
                   {products.map((p, i) => (
-                    <div key={i} className="product-row" style={{ display:"grid", gridTemplateColumns:"2fr 160px 120px 70px 100px 30px", gap:6, alignItems:"start" }}>
+                    <div key={i} className="product-row" style={{ display:"grid", gridTemplateColumns:"2fr 160px 120px 70px 100px 28px 28px", gap:6, alignItems:"start" }}>
                       <div>
                         <Autocomplete value={p.name}
                           onChange={v => setProductField(i,'name',v)}
@@ -854,6 +873,8 @@ export default function ChallanPage() {
                         onChange={e => setProductField(i,'quantity',e.target.value)} />
                       <input readOnly value={((parseFloat(p.price)||0)*(parseInt(p.quantity)||0)).toLocaleString('en-IN',{ minimumFractionDigits:2 })}
                         style={{ background:'#f5f5f2', color:'var(--muted)' }} />
+                      <button type="button" onClick={() => saveProduct(p)} title="Save to favourites"
+                        style={{ background:'none', border:'none', cursor:'pointer', fontSize:14, padding:0 }}>⭐</button>
                       <button type="button" onClick={() => setProducts(prev => prev.filter((_,idx) => idx !== i))}
                         style={{ background:'none', border:'none', cursor:'pointer', color:'var(--danger)', fontSize:16, padding:0 }}>×</button>
                     </div>
