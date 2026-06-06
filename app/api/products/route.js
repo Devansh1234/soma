@@ -37,3 +37,29 @@ export async function GET(request) {
   // (backward compat — returns plain strings merged in)
   return NextResponse.json(data || []);
 }
+
+// POST: save a new product to the products table (from challan form ⭐ button)
+export async function POST(request) {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  const { name, ln_code, base_price, category } = await request.json();
+  if (!name?.trim()) return NextResponse.json({ error: 'name required' }, { status: 400 });
+
+  // If LN code provided, check for existing entry first
+  if (ln_code?.trim()) {
+    const { data: existing } = await supabase
+      .from('products').select('id').eq('ln_code', ln_code.trim()).maybeSingle();
+    if (existing) return NextResponse.json({ ok: true, skipped: true, reason: 'LN code already exists' });
+  }
+
+  const { data, error } = await supabase.from('products').insert({
+    name:       name.trim(),
+    ln_code:    ln_code?.trim() || null,
+    base_price: base_price ? parseFloat(base_price) : null,
+    category:   category || 'Custom',
+  }).select().single();
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true, data });
+}
