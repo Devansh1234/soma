@@ -15,11 +15,6 @@ Stack: Next.js 14 · Supabase · Vercel (all free tier)
 3. This creates: `users`, `companies`, `challan_counters`, `inventory`, `orders`, `order_items`
 4. Your existing tables (`ChallanRecords`, `Customers`, `Products`, `ChallanCounter`) are left untouched
 
-**First owner account created by the schema:**
-- Email: `owner@somacompany.in`
-- Password: `admin123`
-- Change this immediately after first login via the Admin tab
-
 To create a hash for a custom password, run:
 ```
 node -e "const b=require('bcryptjs'); b.hash('yourpassword',12).then(console.log)"
