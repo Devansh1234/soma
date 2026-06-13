@@ -11,7 +11,7 @@ export async function POST(request) {
   }
 
   try {
-    const { invoiceNumber, invoiceDate, items } = await request.json();
+    const { invoiceNumber, invoiceDate, items, salesmanCode } = await request.json();
     // items: [{ ln_code, product_name, quantity, packets_in_product, price, received: bool, pending: bool }]
     if (!items?.length) return NextResponse.json({ error: 'No items provided' }, { status: 400 });
 
@@ -28,6 +28,7 @@ export async function POST(request) {
       .insert({
         invoice_number: invoiceNumber,
         invoice_date:   invoiceDate,
+        salesman_code:  salesmanCode || null,
         total_items:    totalQty,
         received_items: receivedQty,
         company:        user.company,
@@ -119,11 +120,11 @@ export async function PATCH(request) {
   const { ids } = await request.json();
   if (!ids?.length) return NextResponse.json({ error: 'ids required' }, { status: 400 });
 
+  // No company restriction — warehouse is shared across companies
   const { error } = await supabase
     .from('inventory')
     .update({ pending_receipt: false })
-    .in('id', ids)
-    .eq('company', user.company);
+    .in('id', ids);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true, confirmed: ids.length });
