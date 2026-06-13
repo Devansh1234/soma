@@ -129,7 +129,8 @@ export async function PATCH(request) {
     if (!canAccess(user, 'warehouse') && !canAccess(user, 'order_management')) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    const { error } = await supabase.from('inventory').update({ status }).in('id', ids).eq('company', user.company);
+    // No company restriction — warehouse is shared across companies
+    const { error } = await supabase.from('inventory').update({ status }).in('id', ids);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true });
   }
