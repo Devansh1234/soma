@@ -317,17 +317,19 @@ async function reprintChallan(row) {
   const prefixMap  = { SCC: 'soma', NCC: 'nalanda', GEC: 'gangotri' };
   const company    = COMPANIES[prefixMap[prefix]] || Object.values(COMPANIES)[0];
 
-  // Reconstruct challan date from Generated DateTime ("DD-MM-YYYY HH:MM")
-  let challanDate = row['Order Dated'] || '';
-  const genDT = row['Generated DateTime'] || '';
-  if (genDT) {
-    const parts = genDT.split(' ')[0]?.split('-');
-    if (parts?.length === 3) {
-      const d = new Date(parts[2], parts[1] - 1, parts[0]);
-      if (!isNaN(d)) {
-        challanDate = d.toLocaleDateString('en-IN', {
-          day: '2-digit', month: 'short', year: 'numeric'
-        }).replace(/ /g, '-');
+  // Use stored Challan Date if available (new challans), else fall back to Generated DateTime (legacy)
+  let challanDate = row['Challan Date'] || '';
+  if (!challanDate) {
+    const genDT = row['Generated DateTime'] || '';
+    if (genDT) {
+      const parts = genDT.split(' ')[0]?.split('-');
+      if (parts?.length === 3) {
+        const d = new Date(parts[2], parts[1] - 1, parts[0]);
+        if (!isNaN(d)) {
+          challanDate = d.toLocaleDateString('en-IN', {
+            day: '2-digit', month: 'short', year: 'numeric'
+          }).replace(/ /g, '-');
+        }
       }
     }
   }
@@ -506,6 +508,8 @@ export default function ChallanPage() {
   const [generatedChallan, setGeneratedChallan] = useState(null);
   const [showInternal,     setShowInternal]     = useState(false);
   const [challanDate,      setChallanDate]      = useState(() => new Date().toISOString().split('T')[0]);
+  const [savedProducts,    setSavedProducts]    = useState([]);
+  const [showSaved,        setShowSaved]        = useState(false);
   const [emailStatus,      setEmailStatus]      = useState(''); // 'sending'|'sent'|'failed:...'|''
   const [records,          setRecords]          = useState([]);
   const [recordsCount,     setRecordsCount]     = useState(0);
@@ -533,18 +537,28 @@ export default function ChallanPage() {
 
   useEffect(() => {
     fetch('/api/auth/me').then(r => r.json()).then(u => { setUser(u); setCompanyId(u.company); });
+    fetch('/api/saved-products').then(r=>r.json()).then(d => setSavedProducts(Array.isArray(d)?d:[]));
   }, []);
 
+  async function loadSavedProducts() {
+    const d = await fetch('/api/saved-products').then(r=>r.json());
+    setSavedProducts(Array.isArray(d) ? d : []);
+  }
   async function saveProduct(p) {
     if (!p.name?.trim()) return;
-    const res = await fetch('/api/products', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: p.name, ln_code: p.ln_code || null, base_price: p.price || null }),
+    const res = await fetch('/api/saved-products', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ name:p.name, ln_code:p.ln_code, default_price:p.price }),
     });
-    const d = await res.json();
-    if (res.ok && !d.skipped) setSuccess(`"${p.name}" added to product list.`);
-    else if (d.skipped)       setSuccess(`"${p.name}" already in product list.`);
-    else                      setError(d.error);
+    if (res.ok) { loadSavedProducts(); setSuccess(`"${p.name}" saved to favourites.`); }
+    else { const d=await res.json(); if(res.status!==409) setError(d.error); }
+  }
+  async function removeSavedProduct(id) {
+    await fetch(`/api/saved-products?id=${id}`, { method:'DELETE' });
+    loadSavedProducts();
+  }
+  function addSavedToForm(sp) {
+    setProducts(prev=>[...prev, { name:sp.name, ln_code:sp.ln_code||'', price:sp.default_price?String(sp.default_price):'', quantity:1 }]);
   }
 
   useEffect(() => {
@@ -838,6 +852,31 @@ export default function ChallanPage() {
                     </div>
                   </div>
                 </div>
+
+                {savedProducts.length > 0 && (
+                  <div className="card" style={{ marginBottom:10 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:showSaved?8:0 }}>
+                      <span style={{ fontWeight:600, fontSize:13 }}>⭐ Saved Products</span>
+                      <button className="btn btn-secondary btn-sm" onClick={() => setShowSaved(s=>!s)}>
+                        {showSaved ? 'Hide' : 'Show'}
+                      </button>
+                    </div>
+                    {showSaved && (
+                      <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                        {savedProducts.map((sp,i) => (
+                          <div key={i} style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 10px', background:'#f0f7ff', borderRadius:6, border:'1px solid var(--border)' }}>
+                            <button onClick={() => addSavedToForm(sp)}
+                              style={{ background:'none', border:'none', cursor:'pointer', fontSize:12, fontWeight:500, color:'var(--primary)', padding:0 }}>
+                              + {sp.name}
+                            </button>
+                            <button onClick={() => removeSavedProduct(sp.id)}
+                              style={{ background:'none', border:'none', cursor:'pointer', color:'var(--muted)', fontSize:14, padding:0 }} title="Remove">×</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="card">
                   <div className="card-title" style={{ display:'flex', justifyContent:'space-between' }}>
