@@ -11,6 +11,14 @@ function fmtDate(isoStr) {
   return d.toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g,'-');
 }
 
+// Parse a YYYY-MM-DD date string as LOCAL date (avoids UTC midnight → previous day in IST)
+function fmtDateLocal(yyyyMMDD) {
+  if (!yyyyMMDD) return '';
+  const [y, m, d] = yyyyMMDD.split('-').map(Number);
+  const local = new Date(y, m - 1, d);
+  return local.toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g,'-');
+}
+
 function fmtDateShort(isoStr) {
   if (!isoStr) return '';
   const d = new Date(isoStr);
@@ -74,7 +82,8 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const { customer, products, orderReference, orderDate,
-            invoiceReference, invoiceDated, companyOverride } = body;
+            invoiceReference, invoiceDated, companyOverride,
+            challanDate: challanDateOverride } = body;
 
     const companyId = user.role === 'owner' && companyOverride ? companyOverride : user.company;
     const company   = getCompany(companyId);
@@ -95,7 +104,10 @@ export async function POST(request) {
     const ccid          = computeCCID(user.name, challanNumber);
 
     // Date formatting
-    const challanDate  = fmtDate(now.toISOString());
+    // Parse date-only string (YYYY-MM-DD) as local date to avoid UTC timezone shift
+    const challanDate = challanDateOverride
+      ? fmtDateLocal(challanDateOverride)
+      : fmtDate(now.toISOString());
     const orderedShort = fmtDateShort(orderDate || now.toISOString());
     const orderedFull  = fmtDate(orderDate || now.toISOString());
     const invoiceFull  = invoiceDated ? fmtDate(invoiceDated) : '';
