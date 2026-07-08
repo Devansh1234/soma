@@ -130,6 +130,7 @@ export async function POST(request) {
       'Order Reference':    orderReference    || '',
       'Order Dated':        orderedShort,
       'Generated DateTime': generatedDT,
+      'Challan Date':       challanDate,
       'Products':           productsStr,
       status:               'awaiting_delivery',
       created_by_name:      user.name,
