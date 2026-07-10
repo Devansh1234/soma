@@ -4,6 +4,13 @@ import { supabase } from '@/lib/supabase';
 import { getCompany } from '@/lib/companies';
 import { sendSystemEmail, buildItemsTable, emailWrapper } from '@/lib/email';
 
+
+function todayDMY() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  return `${pad(d.getDate())}-${pad(d.getMonth()+1)}-${d.getFullYear()}`;
+}
+
 function parseProductsString(str) {
   if (!str) return [];
   return str.split('; ').map(item => {
@@ -37,28 +44,63 @@ export async function POST(request) {
   const warnings    = [];
 
   // For each product with LN code: change location FIFO (don't dispatch)
+  const compId = user.company; // used for newly added inventory rows
+  const today  = todayDMY();
+
   for (const product of products) {
-    if (!product.ln_code) continue;
     const needed = product.quantity;
 
-    // Find free items at source warehouse FIFO
-    const { data: items } = await supabase
-      .from('inventory')
-      .select('id')
-      .eq('status','free')
-      .eq('product_code', product.ln_code)
-      .eq('pending_receipt', false)
-      .order('created_at',{ ascending:true })
-      .limit(needed);
+    if (product.ln_code) {
+      // Try to find existing free items by LN code
+      const { data: items } = await supabase
+        .from('inventory')
+        .select('id')
+        .eq('status','free')
+        .eq('product_code', product.ln_code)
+        .eq('pending_receipt', false)
+        .order('created_at',{ ascending:true })
+        .limit(needed);
 
-    const found = items?.length || 0;
-    if (found > 0) {
-      await supabase.from('inventory')
-        .update({ location: destination })
-        .in('id', items.map(i=>i.id));
-    }
-    if (found < needed) {
-      warnings.push(`${product.ln_code}: needed ${needed}, only ${found} found`);
+      const found = items?.length || 0;
+      if (found > 0) {
+        await supabase.from('inventory')
+          .update({ location: destination })
+          .in('id', items.map(i => i.id));
+      }
+
+      const missing = needed - found;
+      if (missing > 0) {
+        // Item not yet in the system (legacy business) — add it at the destination
+        const newRows = Array.from({ length: missing }, () => ({
+          product_code:    product.ln_code,
+          product_name:    product.name,
+          quantity:        1,
+          status:          'free',
+          location:        destination,
+          company:         compId,
+          input_date:      today,
+          pending_receipt: false,
+          not_received:    false,
+          type_of_entry:   'internal_transfer',
+        }));
+        await supabase.from('inventory').insert(newRows);
+        warnings.push(`${product.ln_code}: ${missing} unit(s) not found in system — added to inventory at ${destination}`);
+      }
+    } else {
+      // No LN code — add item to inventory at destination so it is tracked
+      const newRows = Array.from({ length: needed }, () => ({
+        product_code:    null,
+        product_name:    product.name,
+        quantity:        1,
+        status:          'free',
+        location:        destination,
+        company:         compId,
+        input_date:      today,
+        pending_receipt: false,
+        not_received:    false,
+        type_of_entry:   'internal_transfer',
+      }));
+      await supabase.from('inventory').insert(newRows);
     }
   }
 
