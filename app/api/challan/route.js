@@ -29,6 +29,16 @@ function fmtDateShort(isoStr) {
 
 
 // ── GET: list challan records ──────────────────────────────────────────────────
+// Parse products string — same format as lifecycle route
+function parseProductsString(str) {
+  if (!str) return [];
+  return str.split('; ').map(item => {
+    const m = item.match(/^(.+?)(?:\s+\[([A-Z0-9]+)\])?\s+\(Rs\.([\d,]+\.?\d*)\s+x\s+(\d+)\)$/);
+    if (m) return { name:m[1], ln_code:m[2]||null, price:parseFloat(m[3].replace(/,/g,'')), quantity:parseInt(m[4]) };
+    return { name:item, ln_code:null, price:0, quantity:1 };
+  }).filter(p => p.name.trim());
+}
+
 export async function GET(request) {
   const user = await getCurrentUser();
   if (!user || !canAccess(user, 'challan')) {
@@ -142,6 +152,32 @@ export async function POST(request) {
       linked_inventory_ids: [],
     });
     if (insErr) throw insErr;
+
+    // ── COMMIT inventory items at challan creation (FIFO by LN code) ─────────
+    const linkedIds = [];
+    for (const product of products) {
+      if (!product.ln_code) continue;
+      const { data: freeItems } = await supabase
+        .from('inventory')
+        .select('id')
+        .eq('company', companyId)
+        .eq('status', 'free')
+        .eq('product_code', product.ln_code.trim())
+        .eq('pending_receipt', false)
+        .order('created_at', { ascending: true })
+        .limit(product.quantity);
+      if (freeItems?.length) {
+        await supabase.from('inventory')
+          .update({ status: 'committed' })
+          .in('id', freeItems.map(i => i.id));
+        linkedIds.push(...freeItems.map(i => i.id));
+      }
+    }
+    if (linkedIds.length) {
+      await supabase.from('ChallanRecords')
+        .update({ linked_inventory_ids: linkedIds })
+        .eq('Challan Number', challanNumber);
+    }
 
     // Save/update customer
     if (customer.name && customer.save) {
