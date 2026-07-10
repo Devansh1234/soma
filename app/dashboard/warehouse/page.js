@@ -702,10 +702,10 @@ const DESTINATIONS = ['Soma Showroom','Sunderpur Showroom','Bhelupur Warehouse',
 
 function InternalTransferTab() {
   const emptyRow = () => ({ name:'', ln_code:'', price:'', quantity:1 });
+  const [challanDate,  setChallanDate]  = useState(() => new Date().toISOString().split('T')[0]);
   const [sourceWH,     setSourceWH]     = useState(WAREHOUSES[0]);
   const [destLoc,      setDestLoc]      = useState(DESTINATIONS[0]);
   const [requestedBy,  setRequestedBy]  = useState('');
-  const [isDisplay,    setIsDisplay]    = useState(false);
   const [products,     setProducts]     = useState([emptyRow()]);
   const [preview,      setPreview]      = useState('');
   const [submitting,   setSubmitting]   = useState(false);
@@ -757,13 +757,13 @@ function InternalTransferTab() {
     const res = await fetch('/api/internal-challan', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ sourceWarehouse:sourceWH, destinationLocation:destLoc,
-        requestedBy, isDisplay, products:valid }),
+        requestedBy, products:valid, challanDate }),
     });
     const data = await res.json();
     setSubmitting(false);
     if (res.ok) {
       setGenerated(data);
-      generateInternalPDF(data);
+      generateInternalPDF({...data, challanDateOverride: challanDate, isDisplay: false});
       loadPreview(); loadHistory();
       setProducts([emptyRow()]); setRequestedBy(''); setIsDisplay(false);
     } else { setError(data.error); }
@@ -771,90 +771,101 @@ function InternalTransferTab() {
 
   async function generateInternalPDF(challan, download=true) {
     const { default: jsPDF } = await import('jspdf');
-    const doc = new jsPDF({ unit:'pt', format:'a4' });
-    const W = 595.28, margin = 35;
-    const bw = W - 2*margin;
+    const doc  = new jsPDF({ unit:'pt', format:'a4' });
+    const W    = 595.28, margin = 40;
+    const bw   = W - 2*margin;
+    const disp = challan.challanDateOverride
+      ? new Date(challan.challanDateOverride).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}).replace(/ /g,'-')
+      : (challan.challanDate || '');
 
-    // Logo (reuse from challan page — fallback to text if not available)
-    try {
-      const logoRes = await fetch('/logo-base64');
-      // Logo loading handled separately; fall back to text
-    } catch {}
+    // ── Header ────────────────────────────────────────────────────────────────
+    doc.setFontSize(11).setFont('helvetica','normal').setTextColor(80);
+    doc.text('Godrej Interio', W/2, 50, { align:'center' });
+    doc.setDrawColor(0).setLineWidth(0.8).rect(margin, 60, bw, 700);
 
-    doc.setFontSize(9).setFont('helvetica','normal').setTextColor(100);
-    doc.text('Godrej Interio', W/2, 85, { align:'center' });
+    doc.setFontSize(15).setFont('helvetica','bold').setTextColor(0);
+    doc.text('INTERNAL TRANSFER CHALLAN', W/2, 84, { align:'center' });
+    doc.setLineWidth(0.5).line(margin, 93, margin+bw, 93);
 
-    // Outer box
-    doc.setDrawColor(0).setLineWidth(0.75);
-    doc.rect(margin, 120, bw, 680);
+    // ── From / Challan meta ────────────────────────────────────────────────────
+    const lx = margin+12, rx = W/2+10;
+    let y = 112;
+    doc.setFontSize(11).setFont('helvetica','bold').setTextColor(0);
+    doc.text(challan.sourceWarehouse || '', lx, y);
+    doc.setFontSize(11).setFont('helvetica','normal');
+    doc.text(`Challan No:  ${challan.challanNumber}`, rx, y);
+    doc.text(`Date:  ${disp}`, rx, y+16);
 
-    // Title
-    doc.setFontSize(14).setFont('helvetica','bold').setTextColor(0);
-    doc.text('INTERNAL TRANSFER CHALLAN', W/2, 148, { align:'center' });
-
-    // Divider
-    doc.setLineWidth(0.5).line(margin, 158, margin+bw, 158);
-
-    // From / challan info block
-    const leftX = margin+10, rightX = margin+bw/2+10;
-    let y = 175;
-    doc.setFontSize(10).setFont('helvetica','bold');
-    doc.text(challan.sourceWarehouse || '', leftX, y);
-    doc.setFont('helvetica','normal').setFontSize(9);
-
-    doc.setFont('helvetica','normal').setFontSize(9);
-    doc.text(`Challan No: ${challan.challanNumber}`, rightX, y);
-    doc.text(`Date: ${challan.challanDate}`, rightX, y+13);
-
-    y += 30;
+    y += 36;
     doc.setLineWidth(0.4).line(margin, y, margin+bw, y);
 
-    // To / details block
-    y += 15;
-    doc.setFont('helvetica','bold').setFontSize(10);
-    doc.text(`To: ${challan.destinationLocation}`, leftX, y);
+    // ── To / Details ───────────────────────────────────────────────────────────
+    y += 16;
+    doc.setFontSize(12).setFont('helvetica','bold');
+    doc.text(`To:  ${challan.destinationLocation || ''}`, lx, y);
+    y += 16;
+    doc.setFontSize(10).setFont('helvetica','normal').setTextColor(60);
+    if (challan.requestedBy) doc.text(`Requested by:  ${challan.requestedBy}`, lx, y);
+    doc.text(`Display Item:  ${challan.isDisplay ? 'Yes' : 'No'}`, rx, y);
+    doc.setTextColor(0);
+
+    y += 24;
+    doc.setLineWidth(0.4).line(margin, y, margin+bw, y);
+
+    // ── Products table ─────────────────────────────────────────────────────────
+    // Column layout:  Sr | Description | LN Code | Qty
+    const srW   = 32;
+    const qtyW  = 45;
+    const lnW   = 155;
+    const descW = bw - srW - qtyW - lnW - 16;  // remaining
+    const cX    = [margin+6, margin+srW+8, margin+srW+8+descW, margin+srW+8+descW+lnW];
+
     y += 14;
-    doc.setFont('helvetica','normal').setFontSize(9);
-    if (challan.requestedBy) doc.text(`Requested by: ${challan.requestedBy}`, leftX, y);
-    doc.text(`Display Item: ${challan.isDisplay ? 'Yes' : 'No'}`, rightX, y);
+    // Header row background
+    doc.setFillColor(240,240,240).rect(margin, y-12, bw, 16, 'F');
+    doc.setFontSize(11).setFont('helvetica','bold').setTextColor(0);
+    ['Sr.','Description','LN Code','Qty'].forEach((h,i) => doc.text(h, cX[i], y));
+    y += 4;
+    doc.setLineWidth(0.5).line(margin, y, margin+bw, y);
+    y += 14;
 
-    y += 20;
-    doc.setLineWidth(0.4).line(margin, y, margin+bw, y);
-
-    // Products table header
-    y += 15;
-    const colW = [30, bw-30-160-80, 160, 80];
-    const colX = [margin+5, margin+35, margin+35+colW[1], margin+35+colW[1]+160];
-    doc.setFont('helvetica','bold').setFontSize(9);
-    ['Sr.','Description','LN Code','Qty'].forEach((h,i) => doc.text(h, colX[i], y));
-    y += 3;
-    doc.setLineWidth(0.4).line(margin, y, margin+bw, y);
-    y += 12;
-
-    doc.setFont('helvetica','normal').setFontSize(9);
+    doc.setFont('helvetica','normal').setFontSize(11);
+    const ROW_H = 18;
     (challan.products||[]).forEach((p,i) => {
-      doc.text(String(i+1)+'.', colX[0], y);
-      const descLines = doc.splitTextToSize('Godrej '+p.name, colW[1]-10);
-      doc.text(descLines, colX[1], y);
-      doc.text(p.ln_code||'—', colX[2], y);
-      doc.text(String(p.quantity), colX[3], y);
-      y += Math.max(descLines.length*11, 13);
+      const descText  = 'Godrej ' + (p.name||'');
+      const descLines = doc.splitTextToSize(descText, descW - 8);
+      const rowH      = Math.max(descLines.length * 14, ROW_H);
+
+      // Alternate row shading
+      if (i%2===1) doc.setFillColor(250,250,250).rect(margin, y-12, bw, rowH+2, 'F');
+
+      doc.setTextColor(0);
+      doc.text(String(i+1)+'.', cX[0], y);
+      doc.text(descLines, cX[1], y);
+      doc.setFontSize(10).setFont('helvetica','normal').setTextColor(60);
+      doc.text(p.ln_code||'—', cX[2], y);
+      doc.setFontSize(11).setTextColor(0);
+      doc.text(String(p.quantity||1), cX[3], y);
+      doc.setFont('helvetica','normal').setFontSize(11);
+
+      y += rowH + 4;
+      doc.setDrawColor(220).setLineWidth(0.3).line(margin, y-2, margin+bw, y-2);
     });
 
-    // Footer line
-    const footerY = 120+680-90;
-    doc.setLineWidth(0.4).line(margin, footerY, margin+bw, footerY);
-    doc.setFontSize(8).setTextColor(100);
-    doc.text('All the listed items have been received in order and good condition.', W/2, footerY+12, { align:'center' });
+    // ── Footer ────────────────────────────────────────────────────────────────
+    const footY = 60 + 700 - 95;
+    doc.setLineWidth(0.4).setDrawColor(0).line(margin, footY, margin+bw, footY);
+    doc.setFontSize(9).setTextColor(100).setFont('helvetica','italic');
+    doc.text('All the listed items have been received in order and good condition.', W/2, footY+13, {align:'center'});
 
     // Signature boxes
     const sigW = bw/3;
-    const sigY = footerY+20;
+    const sigY = footY+22;
     ['Received in Good Condition','For Internal Use','Goods Transporter'].forEach((label,i) => {
       const sx = margin + i*sigW;
-      doc.setDrawColor(180).rect(sx, sigY, sigW, 70);
-      doc.setTextColor(100).setFontSize(7);
-      doc.text(label, sx+sigW/2, sigY+62, { align:'center' });
+      doc.setDrawColor(160).setLineWidth(0.4).rect(sx, sigY, sigW, 68);
+      doc.setFont('helvetica','normal').setFontSize(8).setTextColor(100);
+      doc.text(label, sx+sigW/2, sigY+60, { align:'center' });
     });
 
     if (download) doc.save(`${challan.challanNumber.replace(/\//g,'-')}.pdf`);
@@ -893,11 +904,10 @@ function InternalTransferTab() {
             <label>Requested By</label>
             <input value={requestedBy} onChange={e=>setRequestedBy(e.target.value)} placeholder="Name of person requesting" />
           </div>
-          <div className="form-group" style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
-            <input type="checkbox" checked={isDisplay} onChange={e=>setIsDisplay(e.target.checked)} style={{ width:'auto' }} id="isDisplayChk" />
-            <label htmlFor="isDisplayChk" style={{ margin:0 }}>For Showroom Display (item stays in free stock)</label>
+          <div className="form-group">
+            <label>Challan Date</label>
+            <input type="date" value={challanDate} onChange={e=>setChallanDate(e.target.value)} />
           </div>
-
           {/* Product rows */}
           <div style={{ marginTop:12 }}>
             <div style={{ display:'grid', gridTemplateColumns:'2fr 140px 80px 40px', gap:4, fontSize:11, color:'var(--muted)', marginBottom:4 }}>
