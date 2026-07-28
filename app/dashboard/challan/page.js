@@ -45,24 +45,47 @@ function Autocomplete({ value, onChange, onSelect, fetchFn, placeholder, maxLeng
 }
 
 // Warn (don't block) if the typed product name isn't in the Products table
-function ProductWarning({ name }) {
-  const [known, setKnown] = useState(true);
-  const debounced = useDebounce(name, 600);
+function ProductWarning({ product, onSave }) {
+  const [known,  setKnown]  = useState(true);
+  const [saved,  setSaved]  = useState(false);
+  const [saving, setSaving] = useState(false);
+  const debounced = useDebounce(product?.name || '', 600);
   useEffect(() => {
+    setSaved(false);
     if (!debounced.trim()) { setKnown(true); return; }
     fetch(`/api/products?q=${encodeURIComponent(debounced)}`)
       .then(r => r.json())
       .then(list => {
-        const exact = list.some(p => p.toLowerCase() === debounced.toLowerCase());
+        const exact = Array.isArray(list) &&
+          list.some(p => (p.name || p)?.toLowerCase?.() === debounced.toLowerCase());
         setKnown(exact);
       })
       .catch(() => setKnown(true)); // don't warn on network error
   }, [debounced]);
-  if (!name.trim() || known) return null;
+
+  if (!product?.name?.trim() || known || saved) {
+    return saved ? (
+      <span style={{ fontSize:10, color:'var(--success)', display:'block', marginTop:2 }}>
+        ✓ Saved to product list
+      </span>
+    ) : null;
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    await onSave(product);
+    setSaving(false);
+    setSaved(true);
+  }
+
   return (
-    <span title="This product isn't in the Products database — it will still appear on the challan"
-      style={{ fontSize:10, color:'var(--warn)', display:'block', marginTop:2 }}>
-      ⚠ Not in product list (will still work)
+    <span style={{ fontSize:10, color:'var(--warn)', display:'flex', alignItems:'center', gap:6, marginTop:2 }}>
+      ⚠ Not in product list
+      <button type="button" onClick={handleSave} disabled={saving}
+        style={{ fontSize:10, padding:'1px 8px', border:'1px solid var(--primary)', borderRadius:3,
+          background:'none', color:'var(--primary)', cursor:'pointer', fontWeight:600 }}>
+        {saving ? 'Saving…' : '+ Save to list'}
+      </button>
     </span>
   );
 }
@@ -508,8 +531,6 @@ export default function ChallanPage() {
   const [generatedChallan, setGeneratedChallan] = useState(null);
   const [showInternal,     setShowInternal]     = useState(false);
   const [challanDate,      setChallanDate]      = useState(() => new Date().toISOString().split('T')[0]);
-  const [savedProducts,    setSavedProducts]    = useState([]);
-  const [showSaved,        setShowSaved]        = useState(false);
   const [emailStatus,      setEmailStatus]      = useState(''); // 'sending'|'sent'|'failed:...'|''
   const [records,          setRecords]          = useState([]);
   const [recordsCount,     setRecordsCount]     = useState(0);
@@ -537,28 +558,15 @@ export default function ChallanPage() {
 
   useEffect(() => {
     fetch('/api/auth/me').then(r => r.json()).then(u => { setUser(u); setCompanyId(u.company); });
-    fetch('/api/saved-products').then(r=>r.json()).then(d => setSavedProducts(Array.isArray(d)?d:[]));
   }, []);
 
-  async function loadSavedProducts() {
-    const d = await fetch('/api/saved-products').then(r=>r.json());
-    setSavedProducts(Array.isArray(d) ? d : []);
-  }
   async function saveProduct(p) {
     if (!p.name?.trim()) return;
-    const res = await fetch('/api/saved-products', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ name:p.name, ln_code:p.ln_code, default_price:p.price }),
+    const res = await fetch('/api/products', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: p.name, ln_code: p.ln_code || null, base_price: p.price || null }),
     });
-    if (res.ok) { loadSavedProducts(); setSuccess(`"${p.name}" saved to favourites.`); }
-    else { const d=await res.json(); if(res.status!==409) setError(d.error); }
-  }
-  async function removeSavedProduct(id) {
-    await fetch(`/api/saved-products?id=${id}`, { method:'DELETE' });
-    loadSavedProducts();
-  }
-  function addSavedToForm(sp) {
-    setProducts(prev=>[...prev, { name:sp.name, ln_code:sp.ln_code||'', price:sp.default_price?String(sp.default_price):'', quantity:1 }]);
+    if (!res.ok) { const d = await res.json(); setError(d.error); }
   }
 
   useEffect(() => {
@@ -853,50 +861,25 @@ export default function ChallanPage() {
                   </div>
                 </div>
 
-                {savedProducts.length > 0 && (
-                  <div className="card" style={{ marginBottom:10 }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:showSaved?8:0 }}>
-                      <span style={{ fontWeight:600, fontSize:13 }}>⭐ Saved Products</span>
-                      <button className="btn btn-secondary btn-sm" onClick={() => setShowSaved(s=>!s)}>
-                        {showSaved ? 'Hide' : 'Show'}
-                      </button>
-                    </div>
-                    {showSaved && (
-                      <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
-                        {savedProducts.map((sp,i) => (
-                          <div key={i} style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 10px', background:'#f0f7ff', borderRadius:6, border:'1px solid var(--border)' }}>
-                            <button onClick={() => addSavedToForm(sp)}
-                              style={{ background:'none', border:'none', cursor:'pointer', fontSize:12, fontWeight:500, color:'var(--primary)', padding:0 }}>
-                              + {sp.name}
-                            </button>
-                            <button onClick={() => removeSavedProduct(sp.id)}
-                              style={{ background:'none', border:'none', cursor:'pointer', color:'var(--muted)', fontSize:14, padding:0 }} title="Remove">×</button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
                 <div className="card">
                   <div className="card-title" style={{ display:'flex', justifyContent:'space-between' }}>
                     Products
                     <button type="button" className="btn btn-secondary btn-sm" onClick={() => setProducts(p => [...p, emptyProduct()])} disabled={products.length >= 10} title={products.length >= 10 ? "Maximum 10 items per challan" : ""}>+ Add Row{products.length >= 10 ? " (max)" : ` (${products.length}/10)`}</button>
                   </div>
-                  <div style={{ fontSize:11, color:'var(--muted)', marginBottom:8, display:'grid', gridTemplateColumns:'2fr 160px 120px 70px 100px 28px 28px', gap:6 }}>
+                  <div style={{ fontSize:11, color:'var(--muted)', marginBottom:8, display:'grid', gridTemplateColumns:'2fr 160px 120px 70px 100px 30px', gap:6 }}>
                     <span>Product Name <em>("Godrej " added automatically)</em></span>
                     <span style={{ color:'var(--accent)' }}>LN Code <em>(optional)</em></span>
-                    <span>Price (₹)</span><span>Qty</span><span>Total (₹)</span><span></span><span></span>
+                    <span>Price (₹)</span><span>Qty</span><span>Total (₹)</span><span></span>
                   </div>
                   {products.map((p, i) => (
-                    <div key={i} className="product-row" style={{ display:"grid", gridTemplateColumns:"2fr 160px 120px 70px 100px 28px 28px", gap:6, alignItems:"start" }}>
+                    <div key={i} className="product-row" style={{ display:"grid", gridTemplateColumns:"2fr 160px 120px 70px 100px 30px", gap:6, alignItems:"start" }}>
                       <div>
                         <Autocomplete value={p.name}
                           onChange={v => setProductField(i,'name',v)}
                           onSelect={v => onProductSelect(i, v)}
                           fetchFn={q => fetch(`/api/products?q=${encodeURIComponent(q)}`).then(r => r.json()).then(list => Array.isArray(list) ? list.map(x => x.name || x) : list)}
                           placeholder="Search product…" maxLength={60} />
-                        <ProductWarning name={p.name} />
+                        <ProductWarning product={p} onSave={saveProduct} />
                       </div>
                       <input
                         value={p.ln_code || ''}
@@ -912,8 +895,6 @@ export default function ChallanPage() {
                         onChange={e => setProductField(i,'quantity',e.target.value)} />
                       <input readOnly value={((parseFloat(p.price)||0)*(parseInt(p.quantity)||0)).toLocaleString('en-IN',{ minimumFractionDigits:2 })}
                         style={{ background:'#f5f5f2', color:'var(--muted)' }} />
-                      <button type="button" onClick={() => saveProduct(p)} title="Save to favourites"
-                        style={{ background:'none', border:'none', cursor:'pointer', fontSize:14, padding:0 }}>⭐</button>
                       <button type="button" onClick={() => setProducts(prev => prev.filter((_,idx) => idx !== i))}
                         style={{ background:'none', border:'none', cursor:'pointer', color:'var(--danger)', fontSize:16, padding:0 }}>×</button>
                     </div>
