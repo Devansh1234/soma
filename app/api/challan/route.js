@@ -1,134 +1,204 @@
 import { NextResponse } from 'next/server';
 import { getCurrentUser, canAccess } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
-import { getCompany } from '@/lib/companies';
+import { getCompany, formatChallanNumber } from '@/lib/companies';
 import { computeCCID } from '@/lib/permissions';
-import { sendSystemEmail, buildItemsTable, emailWrapper } from '@/lib/email';
 
-const WAREHOUSE_PREFIXES = {
-  'Bhelupur Warehouse': { key: 'int_bhe', prefix: 'INT/BHE' },
-  'Lehertara Warehouse':{ key: 'int_leh', prefix: 'INT/LEH' },
-  'Rohaniya Warehouse': { key: 'int_roh', prefix: 'INT/ROH' },
-};
-
-function fmtDate(d = new Date()) {
-  return d.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}).replace(/ /g,'-');
+function fmtDate(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (isNaN(d)) return isoStr;
+  return d.toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g,'-');
 }
 
-// GET: list internal challans for this company
+// Parse a YYYY-MM-DD date string as LOCAL date (avoids UTC midnight → previous day in IST)
+function fmtDateLocal(yyyyMMDD) {
+  if (!yyyyMMDD) return '';
+  const [y, m, d] = yyyyMMDD.split('-').map(Number);
+  const local = new Date(y, m - 1, d);
+  return local.toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g,'-');
+}
+
+function fmtDateShort(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (isNaN(d)) return isoStr;
+  return d.toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'2-digit' }).replace(/ /g,'-');
+}
+
+
+
+// ── GET: list challan records ──────────────────────────────────────────────────
+// Parse products string — same format as lifecycle route
+function parseProductsString(str) {
+  if (!str) return [];
+  return str.split('; ').map(item => {
+    const m = item.match(/^(.+?)(?:\s+\[([A-Z0-9]+)\])?\s+\(Rs\.([\d,]+\.?\d*)\s+x\s+(\d+)\)$/);
+    if (m) return { name:m[1], ln_code:m[2]||null, price:parseFloat(m[3].replace(/,/g,'')), quantity:parseInt(m[4]) };
+    return { name:item, ln_code:null, price:0, quantity:1 };
+  }).filter(p => p.name.trim());
+}
+
 export async function GET(request) {
   const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error:'Unauthorized' },{status:401});
+  if (!user || !canAccess(user, 'challan')) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
   const { searchParams } = new URL(request.url);
-  const status = searchParams.get('status') || '';
-  const limit  = parseInt(searchParams.get('limit') || '200');
+  const limit    = parseInt(searchParams.get('limit')  || '200');
+  const offset   = parseInt(searchParams.get('offset') || '0');
+  const search   = searchParams.get('search')   || '';
+  const status   = searchParams.get('status')   || '';
+  const monthNum = searchParams.get('month')    || '';
+  const yearNum  = searchParams.get('year')     || '';
+  const unbilled         = searchParams.get('unbilled') === '1';
+  const excludeInternal  = searchParams.get('exclude_internal') === '1';
+
+  const companyParam = searchParams.get('company'); // 'all' skips prefix filter (warehouse view)
+  const company = getCompany(user.company);
+  const prefix  = company?.prefix || '';
 
   let query = supabase
     .from('ChallanRecords')
-    .select('*', { count:'exact' })
-    .eq('challan_type', 'internal')
+    .select('*', { count: 'exact' })
     .order('Challan Number', { ascending: false })
-    .limit(limit);
+    .range(offset, offset + limit - 1);
 
-  // Filter by company: internal challans start with INT/
-  // We use source_warehouse to associate with a company
-  // For simplicity, company is stored in the Challan Number prefix context
-  if (status) query = query.eq('status', status);
+  // Skip prefix filter when company=all (shared warehouse sees all companies)
+  if (companyParam !== 'all') {
+    query = query.like('Challan Number', `${prefix}/%`);
+  }
+
+  if (search)   query = query.or(`"Customer Name".ilike.%${search}%,"Challan Number".ilike.%${search}%,ccid.ilike.%${search}%`);
+  if (status)   query = query.eq('status', status);
+  if (monthNum) query = query.eq('month_num', parseInt(monthNum));
+  if (yearNum)  query = query.eq('year_num',  parseInt(yearNum));
+  if (unbilled)        query = query.or('invoice_reference.is.null,invoice_reference.eq.');
+  if (excludeInternal) query = query.or('challan_type.is.null,challan_type.eq.customer');
 
   const { data, error, count } = await query;
-  if (error) return NextResponse.json({ error: error.message },{status:500});
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ data, count });
 }
 
-// POST: create internal challan
+// ── POST: generate new challan ─────────────────────────────────────────────────
 export async function POST(request) {
   const user = await getCurrentUser();
-  if (!user || !canAccess(user, 'internal_challan')) {
-    return NextResponse.json({ error:'Unauthorized' },{status:401});
+  if (!user || !canAccess(user, 'challan')) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { sourceWarehouse, destinationLocation, requestedBy, isDisplay,
-          products, challanDate: challanDateOverride } = await request.json();
+  try {
+    const body = await request.json();
+    const { customer, products, orderReference, orderDate,
+            invoiceReference, invoiceDated, companyOverride,
+            challanDate: challanDateOverride } = body;
 
-  if (!sourceWarehouse || !destinationLocation || !products?.length) {
-    return NextResponse.json({ error:'sourceWarehouse, destinationLocation and products required' },{status:400});
-  }
+    const companyId = user.role === 'owner' && companyOverride ? companyOverride : user.company;
+    const company   = getCompany(companyId);
+    if (!company)          return NextResponse.json({ error: 'Invalid company' },               { status: 400 });
+    if (!customer?.name)   return NextResponse.json({ error: 'Customer name required' },        { status: 400 });
+    if (!products?.length) return NextResponse.json({ error: 'At least one product required' }, { status: 400 });
 
-  const wh = WAREHOUSE_PREFIXES[sourceWarehouse];
-  if (!wh) return NextResponse.json({ error:'Invalid source warehouse' },{status:400});
+    const now   = new Date();
+    const year  = now.getFullYear();
+    const month = now.getMonth() + 1;
 
-  const company = getCompany(user.company);
-  const now     = new Date();
-  const year    = now.getFullYear();
-  const month   = now.getMonth() + 1;
+    // Atomic counter increment
+    const { data: seq, error: cErr } = await supabase
+      .rpc('get_next_challan_number', { p_company: companyId, p_year: year, p_month: month });
+    if (cErr) throw cErr;
 
-  // Get next counter using warehouse-specific key
-  const { data: seq, error: cErr } = await supabase
-    .rpc('get_next_challan_number', { p_company: wh.key, p_year: year, p_month: month });
-  if (cErr) return NextResponse.json({ error: cErr.message },{status:500});
+    const challanNumber = formatChallanNumber(company.prefix, year, month, seq);
+    const ccid          = computeCCID(user.name, challanNumber);
 
-  const mm             = String(month).padStart(2,'0');
-  const sss            = String(seq).padStart(3,'0');
-  const challanNumber  = `${wh.prefix}/${year}/${mm}/${sss}`;
-  const dateObj     = challanDateOverride ? new Date(challanDateOverride) : now;
-  const challanDate  = fmtDate(dateObj);
-  const pad            = n => String(n).padStart(2,'0');
-  const generatedDT    = `${pad(now.getDate())}-${pad(now.getMonth()+1)}-${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    // Date formatting
+    // Parse date-only string (YYYY-MM-DD) as local date to avoid UTC timezone shift
+    const challanDate = challanDateOverride
+      ? fmtDateLocal(challanDateOverride)
+      : fmtDate(now.toISOString());
+    const orderedShort = fmtDateShort(orderDate || now.toISOString());
+    const orderedFull  = fmtDate(orderDate || now.toISOString());
+    const invoiceFull  = invoiceDated ? fmtDate(invoiceDated) : '';
+    const pad          = n => String(n).padStart(2, '0');
+    const generatedDT  = `${pad(now.getDate())}-${pad(now.getMonth()+1)}-${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
 
-  const productsStr = products
-    .map(p => `${p.name}${p.ln_code ? ' ['+p.ln_code+']' : ''} (Rs.${parseFloat(p.price||0).toFixed(2)} x ${p.quantity})`)
-    .join('; ');
+    // Include LN code in brackets when available — enables RTC inventory dispatch
+    const productsStr = products
+      .map(p => `${p.name}${p.ln_code ? ' ['+p.ln_code.trim()+']' : ''} (Rs.${parseFloat(p.price).toFixed(2)} x ${p.quantity})`)
+      .join('; ');
 
-  const { error: insErr } = await supabase.from('ChallanRecords').insert({
-    'Challan Number':      challanNumber,
-    'Customer Name':       destinationLocation,  // reuse field for destination
-    'Generated DateTime':  generatedDT,
-    'Products':            productsStr,
-    status:                'awaiting_delivery',
-    challan_type:          'internal',
-    destination_location:  destinationLocation,
-    requested_by:          requestedBy || null,
-    is_display:            isDisplay || false,
-    source_warehouse:      sourceWarehouse,
-    created_by_name:       user.name,
-    month_num:             month,
-    year_num:              year,
-    linked_inventory_ids:  [],
-  });
-  if (insErr) return NextResponse.json({ error: insErr.message },{status:500});
-
-  // Email notification
-  if (company?.defaultEmail) {
-    const tableHtml = buildItemsTable(
-      ['Product','LN Code','Qty'],
-      products.map(p => [p.name, p.ln_code||'—', p.quantity])
-    );
-    await sendSystemEmail({
-      companyEmail: company.defaultEmail,
-      companyName:  company.name,
-      subject: `Internal Transfer ${challanNumber} — ${sourceWarehouse} → ${destinationLocation}`,
-      htmlBody: emailWrapper({
-        companyName: company.name,
-        title: 'Internal Transfer Challan Created',
-        meta: {
-          'Challan No':    challanNumber,
-          'Date':          challanDate,
-          'From':          sourceWarehouse,
-          'To':            destinationLocation,
-          'Requested by':  requestedBy || '—',
-          'Display item':  isDisplay ? 'Yes' : 'No',
-          'Created by':    user.name,
-        },
-        tableHtml,
-        footer: 'Automated notification from Challan & Warehouse System',
-      }),
+    // Save challan record
+    const { error: insErr } = await supabase.from('ChallanRecords').insert({
+      'Challan Number':     challanNumber,
+      'Customer Name':      customer.name,
+      'GSTIN':              customer.gstin    || '',
+      'Address Line 1':     customer.address1 || '',
+      'Address Line 2':     customer.address2 || '',
+      'Mobile':             customer.mobile   || '',
+      'Order Reference':    orderReference    || '',
+      'Order Dated':        orderedShort,
+      'Generated DateTime': generatedDT,
+      'Challan Date':       challanDate,
+      'Products':           productsStr,
+      status:               'awaiting_delivery',
+      created_by_name:      user.name,
+      ccid,
+      invoice_reference:    invoiceReference || null,
+      invoice_dated:        invoiceFull      || null,
+      month_num:            month,
+      year_num:             year,
+      linked_inventory_ids: [],
     });
-  }
+    if (insErr) throw insErr;
 
-  return NextResponse.json({
-    ok: true, challanNumber, challanDate, sourceWarehouse,
-    destinationLocation, requestedBy, isDisplay, products,
-    generatedAt: generatedDT,
-  });
+    // ── COMMIT inventory items at challan creation (FIFO by LN code) ─────────
+    const linkedIds = [];
+    for (const product of products) {
+      if (!product.ln_code) continue;
+      const { data: freeItems } = await supabase
+        .from('inventory')
+        .select('id')
+        .eq('company', companyId)
+        .eq('status', 'free')
+        .eq('product_code', product.ln_code.trim())
+        .eq('pending_receipt', false)
+        .order('created_at', { ascending: true })
+        .limit(product.quantity);
+      if (freeItems?.length) {
+        await supabase.from('inventory')
+          .update({ status: 'committed' })
+          .in('id', freeItems.map(i => i.id));
+        linkedIds.push(...freeItems.map(i => i.id));
+      }
+    }
+    if (linkedIds.length) {
+      await supabase.from('ChallanRecords')
+        .update({ linked_inventory_ids: linkedIds })
+        .eq('Challan Number', challanNumber);
+    }
+
+    // Save/update customer
+    if (customer.name && customer.save) {
+      await supabase.from('Customers').upsert({
+        Name: customer.name, GSTIN: customer.gstin || '',
+        Address_L1: customer.address1 || '', Address_L2: customer.address2 || '',
+        Number: customer.mobile || '',
+      }, { onConflict: 'Name', ignoreDuplicates: false });
+    }
+
+    return NextResponse.json({
+      challanNumber, challanDate, ccid, company, customer, products,
+      orderReference:   orderReference || '',
+      orderDate:        orderedFull,
+      invoiceReference: invoiceReference || '',
+      invoiceDated:     invoiceFull,
+      generatedAt:      generatedDT,
+    });
+
+  } catch (err) {
+    console.error('Challan error:', err);
+    return NextResponse.json({ error: err.message || 'Server error' }, { status: 500 });
+  }
 }
