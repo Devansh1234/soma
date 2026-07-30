@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, canAccess } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { getCompany } from '@/lib/companies';
 import { computeCCID } from '@/lib/permissions';
@@ -44,12 +44,12 @@ export async function GET(request) {
 // POST: create internal challan
 export async function POST(request) {
   const user = await getCurrentUser();
-  if (!user || !['owner','warehouse_employee'].includes(user.role)) {
+  if (!user || !canAccess(user, 'internal_challan')) {
     return NextResponse.json({ error:'Unauthorized' },{status:401});
   }
 
   const { sourceWarehouse, destinationLocation, requestedBy, isDisplay,
-          products } = await request.json();
+          products, challanDate: challanDateOverride } = await request.json();
 
   if (!sourceWarehouse || !destinationLocation || !products?.length) {
     return NextResponse.json({ error:'sourceWarehouse, destinationLocation and products required' },{status:400});
@@ -71,7 +71,8 @@ export async function POST(request) {
   const mm             = String(month).padStart(2,'0');
   const sss            = String(seq).padStart(3,'0');
   const challanNumber  = `${wh.prefix}/${year}/${mm}/${sss}`;
-  const challanDate    = fmtDate(now);
+  const dateObj     = challanDateOverride ? new Date(challanDateOverride) : now;
+  const challanDate  = fmtDate(dateObj);
   const pad            = n => String(n).padStart(2,'0');
   const generatedDT    = `${pad(now.getDate())}-${pad(now.getMonth()+1)}-${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
 
