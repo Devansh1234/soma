@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, canAccess } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { getCompany } from '@/lib/companies';
 import { sendSystemEmail, buildItemsTable, emailWrapper } from '@/lib/email';
@@ -22,7 +22,7 @@ function parseProductsString(str) {
 
 export async function POST(request) {
   const user = await getCurrentUser();
-  if (!user || !['owner','warehouse_employee'].includes(user.role)) {
+  if (!user || !(canAccess(user, 'warehouse') || canAccess(user, 'internal_challan'))) {
     return NextResponse.json({ error:'Unauthorized' },{status:401});
   }
 
