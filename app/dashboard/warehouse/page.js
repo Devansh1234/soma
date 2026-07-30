@@ -1,5 +1,6 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
+import { DEFAULT_PERMISSIONS } from '@/lib/permissions';
 
 function useDebounce(v, d = 350) {
   const [dv, setDv] = useState(v);
@@ -980,6 +981,18 @@ function InternalTransferTab() {
 // ── Main Warehouse Page ───────────────────────────────────────────────────────
 export default function WarehousePage() {
   const [tab, setTab]                     = useState('receive');
+  const [perms, setPerms]                 = useState(null);
+
+  useEffect(() => {
+    fetch('/api/auth/me').then(r => r.json()).then(u => {
+      const p = u.role === 'owner'
+        ? DEFAULT_PERMISSIONS.owner
+        : { ...(DEFAULT_PERMISSIONS[u.role] || {}), ...(u.tab_permissions || {}) };
+      setPerms(p);
+      // If user has only internal_challan (no warehouse), land on that tab
+      if (!p.warehouse && p.internal_challan) setTab('internal');
+    });
+  }, []);
   const [pendingChallanCount, setPCC]     = useState(0);
   const [pendingReceiptCount, setPRC]     = useState(0);
 
@@ -996,11 +1009,17 @@ export default function WarehousePage() {
         active={tab}
         onChange={setTab}
         tabs={[
-          ['receive',    'Receive Stock',      pendingReceiptCount || null],
-          ['dispatch',   'Dispatch',           pendingChallanCount || null],
-          ['internal',   'Internal Transfer',  null],
-          ['inventory',  'Inventory',          null],
-          ['adjustments','Adjustments',        null],
+          ...(perms?.warehouse !== false ? [
+            ['receive',    'Receive Stock',      pendingReceiptCount || null],
+            ['dispatch',   'Dispatch',           pendingChallanCount || null],
+          ] : []),
+          ...(perms?.internal_challan !== false ? [
+            ['internal',   'Internal Transfer',  null],
+          ] : []),
+          ...(perms?.warehouse !== false ? [
+            ['inventory',  'Inventory',          null],
+            ['adjustments','Adjustments',        null],
+          ] : []),
         ]}
       />
       {tab === 'receive'     && <ReceiveStockTab />}
