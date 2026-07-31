@@ -833,7 +833,8 @@ function InternalTransferTab() {
     doc.setFont('helvetica','normal').setFontSize(11);
     const ROW_H = 18;
     (challan.products||[]).forEach((p,i) => {
-      const descText  = 'Godrej ' + (p.name||'');
+      const nameRaw   = p.name || '';
+      const descText  = /^godrej\b/i.test(nameRaw.trim()) ? nameRaw : 'Godrej ' + nameRaw;
       const descLines = doc.splitTextToSize(descText, descW - 8);
       const rowH      = Math.max(descLines.length * 14, ROW_H);
 
