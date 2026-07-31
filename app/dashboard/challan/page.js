@@ -275,7 +275,8 @@ async function generatePDF(challan, returnBlob = false) {
   const lineH = 14;
   for (let i = 0; i < challan.products.length; i++) {
     const p = challan.products[i];
-    const descLines = doc.splitTextToSize('Godrej ' + p.name, colWidths[1] - 16);
+    const _n = (p.name || '').trim();
+    const descLines = doc.splitTextToSize(/^godrej\b/i.test(_n) ? _n : 'Godrej ' + _n, colWidths[1] - 16);
     const rowH = Math.max(30, descLines.length * lineH + 8);
     if (rowY + rowH > colLinesEnd - 5) break; // stop before note area
     doc.setFontSize(12).setFont('helvetica', 'bold');
