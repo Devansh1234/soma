@@ -44,7 +44,7 @@ function ReceiveStockTab({ company }) {
   const [notReceivedItems, setNRI] = useState([]);
 
   async function loadNotReceived() {
-    const res = await fetch('/api/inventory?pending=true&not_received=true&company=all&limit=200');
+    const res = await fetch('/api/inventory?pending=true&not_received=true&company=all&limit=5000');
     const { data } = await res.json();
     setNRI(data || []);
   }
@@ -71,7 +71,7 @@ function ReceiveStockTab({ company }) {
 
   async function loadPending() {
     setPendingLoading(true);
-    const res = await fetch('/api/inventory?pending=true&not_received=false&company=all&limit=200');
+    const res = await fetch('/api/inventory?pending=true&not_received=false&company=all&limit=5000');
     const { data } = await res.json();
     setPendingItems(data || []);
     setPendingLoading(false);
@@ -148,91 +148,187 @@ function ReceiveStockTab({ company }) {
     else { const d = await res.json(); setError(d.error); }
   }
 
+  // ── Grouping: one line per invoice line (invoice + LN code + name) ─────────
+  const [qtyByKey, setQtyByKey] = useState({});
+
+  function groupItems(items) {
+    const map = {};
+    for (const it of items) {
+      const key = `${it.invoice_number || ''}|${it.product_code || ''}|${it.product_name || ''}`;
+      if (!map[key]) map[key] = {
+        key, ids: [],
+        product_name:   it.product_name,
+        product_code:   it.product_code,
+        invoice_number: it.invoice_number,
+        invoice_date:   it.invoice_date,
+        price:          it.price,
+      };
+      map[key].ids.push(it.id);
+      if (!map[key].price && it.price) map[key].price = it.price;
+    }
+    return Object.values(map).map(g => ({ ...g, qty: g.ids.length }));
+  }
+
+  // Receive N units of a group; the remainder moves to Expected — Not Yet Received
+  async function receiveGroup(group, receivedCount) {
+    const n = Math.max(0, Math.min(parseInt(receivedCount) || 0, group.ids.length));
+    const receivedIds = group.ids.slice(0, n);
+    const restIds     = group.ids.slice(n);
+
+    if (receivedIds.length) {
+      const res = await fetch('/api/inventory/confirm-invoice', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: receivedIds }),
+      });
+      if (!res.ok) { const d = await res.json(); setError(d.error); return; }
+    }
+    if (restIds.length) {
+      await Promise.all(restIds.map(id =>
+        fetch('/api/inventory', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, not_received: true }),
+        })
+      ));
+    }
+    setSuccess(`✓ ${n} unit(s) of "${group.product_name}" received${restIds.length ? ` — ${restIds.length} moved to Expected (Not Yet Received)` : ''}.`);
+    setQtyByKey(q => ({ ...q, [group.key]: undefined }));
+    loadPending(); loadNotReceived();
+  }
+
+  // Whole group not received
+  async function noneReceivedGroup(group) {
+    await Promise.all(group.ids.map(id =>
+      fetch('/api/inventory', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, not_received: true }),
+      })
+    ));
+    setSuccess(`"${group.product_name}" (${group.qty} unit${group.qty>1?'s':''}) moved to Expected — Not Yet Received.`);
+    loadPending(); loadNotReceived();
+  }
+
+  // Mark N units of an Expected group as now received
+  async function nowReceivedGroup(group, receivedCount) {
+    const n = Math.max(1, Math.min(parseInt(receivedCount) || group.qty, group.ids.length));
+    await confirmNotReceived(group.ids.slice(0, n));
+    setQtyByKey(q => ({ ...q, [group.key]: undefined }));
+  }
+
   return (
     <div>
       {error   && <div className="alert alert-error">{error}</div>}
       {success && <div className="alert alert-success">{success}</div>}
 
-      {/* Pending receipts */}
-      {pendingItems.length > 0 && (
+      {/* Pending receipts — grouped: one line per invoice line */}
+      {pendingItems.length > 0 && (() => {
+        const groups = groupItems(pendingItems);
+        return (
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-title" style={{ color:'var(--warn)' }}>
-            ⚠ Pending Receipts — {pendingItems.length} items awaiting physical confirmation
+            ⚠ Pending Receipts — {groups.length} invoice line{groups.length!==1?'s':''} · {pendingItems.length} units awaiting confirmation
           </div>
           <p style={{ fontSize:12, color:'var(--muted)', marginBottom:12 }}>
-            These items were on an invoice but not confirmed as physically received. Check them off once you have them in hand.
+            One line per invoice item. If fewer units arrived than invoiced, adjust the Qty before confirming — the remainder moves to "Expected — Not Yet Received".
           </p>
           <table>
-            <thead><tr><th>Product Name</th><th>LN Code</th><th>Invoice No.</th><th>Invoice Date</th><th>Price (₹)</th><th>Action</th></tr></thead>
+            <thead><tr><th>Product Name</th><th>LN Code</th><th>Invoice No.</th><th>Invoice Date</th><th style={{ textAlign:'right' }}>Unit Price (₹)</th><th style={{ textAlign:'right' }}>Qty</th><th>Receive</th></tr></thead>
             <tbody>
-              {pendingItems.map((item, i) => (
-                <tr key={i}>
-                  <td>{item.product_name}</td>
-                  <td className="mono" style={{ fontSize:11 }}>{item.product_code || '—'}</td>
-                  <td className="mono" style={{ fontSize:11 }}>{item.invoice_number || '—'}</td>
-                  <td style={{ fontSize:11 }}>{item.invoice_date || '—'}</td>
+              {groups.map(g => {
+                const entered = qtyByKey[g.key] !== undefined ? qtyByKey[g.key] : g.qty;
+                return (
+                <tr key={g.key}>
+                  <td>{g.product_name}</td>
+                  <td className="mono" style={{ fontSize:11 }}>{g.product_code || '—'}</td>
+                  <td className="mono" style={{ fontSize:11 }}>{g.invoice_number || '—'}</td>
+                  <td style={{ fontSize:11 }}>{g.invoice_date || '—'}</td>
                   <td style={{ textAlign:'right', fontFamily:'var(--font-mono)', fontSize:12 }}>
-                    {item.price ? Number(item.price).toLocaleString('en-IN', { minimumFractionDigits:2 }) : '—'}
+                    {g.price ? Number(g.price).toLocaleString('en-IN', { minimumFractionDigits:2 }) : '—'}
                   </td>
-                  <td style={{ whiteSpace:'nowrap', display:'flex', gap:6 }}>
-                    <button className="btn btn-primary btn-sm" onClick={() => confirmPendingItems([item.id])}>
-                      ✓ Received
-                    </button>
-                    <button className="btn btn-danger btn-sm" onClick={() => markNotReceived(item.id, item.product_name)}>
-                      ✗ Not Received
-                    </button>
+                  <td style={{ textAlign:'right', fontFamily:'var(--font-mono)', fontWeight:700 }}>{g.qty}</td>
+                  <td style={{ whiteSpace:'nowrap' }}>
+                    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                      {g.qty > 1 && (
+                        <input type="number" min={0} max={g.qty} value={entered}
+                          onChange={e => setQtyByKey(q => ({ ...q, [g.key]: e.target.value }))}
+                          style={{ width:56, fontSize:12, padding:'3px 6px' }}
+                          title={`Units actually received (of ${g.qty})`} />
+                      )}
+                      <button className="btn btn-primary btn-sm" onClick={() => receiveGroup(g, g.qty > 1 ? entered : 1)}>
+                        ✓ Received{g.qty > 1 ? ` (${Math.min(parseInt(entered)||0, g.qty)}/${g.qty})` : ''}
+                      </button>
+                      <button className="btn btn-danger btn-sm" onClick={() => noneReceivedGroup(g)}>
+                        ✗ None
+                      </button>
+                    </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
-          {pendingItems.length > 1 && (
+          {groups.length > 1 && (
             <button className="btn btn-primary btn-sm" style={{ marginTop:10 }}
               onClick={() => confirmPendingItems(pendingItems.map(i => i.id))}>
-              ✓ Mark All as Received
+              ✓ Mark All as Received ({pendingItems.length} units)
             </button>
           )}
         </div>
-      )}
+        );
+      })()}
 
-      {/* Expected — Not Yet Received */}
-      {notReceivedItems.length > 0 && (
+      {/* Expected — Not Yet Received — grouped */}
+      {notReceivedItems.length > 0 && (() => {
+        const groups = groupItems(notReceivedItems);
+        return (
         <div className="card" style={{ marginTop:20 }}>
           <div className="card-title" style={{ color:'var(--muted)' }}>
-            📦 Expected — Not Yet Received ({notReceivedItems.length} items)
+            📦 Expected — Not Yet Received ({groups.length} line{groups.length!==1?'s':''} · {notReceivedItems.length} units)
           </div>
           <p style={{ fontSize:12, color:'var(--muted)', marginBottom:12 }}>
-            These items were on an invoice but not physically received at that time. Mark them as received when they arrive.
+            These items were invoiced but not physically received at the time. When they arrive, adjust Qty if needed and mark as received.
           </p>
           <table>
-            <thead><tr><th>Product Name</th><th>LN Code</th><th>Invoice No.</th><th>Invoice Date</th><th>Price (₹)</th><th>Action</th></tr></thead>
+            <thead><tr><th>Product Name</th><th>LN Code</th><th>Invoice No.</th><th>Invoice Date</th><th style={{ textAlign:'right' }}>Unit Price (₹)</th><th style={{ textAlign:'right' }}>Qty</th><th>Action</th></tr></thead>
             <tbody>
-              {notReceivedItems.map((item, i) => (
-                <tr key={i}>
-                  <td>{item.product_name}</td>
-                  <td className="mono" style={{ fontSize:11 }}>{item.product_code || '—'}</td>
-                  <td className="mono" style={{ fontSize:11 }}>{item.invoice_number || '—'}</td>
-                  <td style={{ fontSize:11 }}>{item.invoice_date || '—'}</td>
+              {groups.map(g => {
+                const entered = qtyByKey[g.key] !== undefined ? qtyByKey[g.key] : g.qty;
+                return (
+                <tr key={g.key}>
+                  <td>{g.product_name}</td>
+                  <td className="mono" style={{ fontSize:11 }}>{g.product_code || '—'}</td>
+                  <td className="mono" style={{ fontSize:11 }}>{g.invoice_number || '—'}</td>
+                  <td style={{ fontSize:11 }}>{g.invoice_date || '—'}</td>
                   <td style={{ textAlign:'right', fontFamily:'var(--font-mono)', fontSize:12 }}>
-                    {item.price ? Number(item.price).toLocaleString('en-IN', { minimumFractionDigits:2 }) : '—'}
+                    {g.price ? Number(g.price).toLocaleString('en-IN', { minimumFractionDigits:2 }) : '—'}
                   </td>
-                  <td>
-                    <button className="btn btn-primary btn-sm" onClick={() => confirmNotReceived([item.id])}>
-                      ✓ Now Received
-                    </button>
+                  <td style={{ textAlign:'right', fontFamily:'var(--font-mono)', fontWeight:700 }}>{g.qty}</td>
+                  <td style={{ whiteSpace:'nowrap' }}>
+                    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                      {g.qty > 1 && (
+                        <input type="number" min={1} max={g.qty} value={entered}
+                          onChange={e => setQtyByKey(q => ({ ...q, [g.key]: e.target.value }))}
+                          style={{ width:56, fontSize:12, padding:'3px 6px' }}
+                          title={`Units that have now arrived (of ${g.qty})`} />
+                      )}
+                      <button className="btn btn-primary btn-sm" onClick={() => nowReceivedGroup(g, g.qty > 1 ? entered : 1)}>
+                        ✓ Now Received{g.qty > 1 ? ` (${Math.min(parseInt(entered)||g.qty, g.qty)}/${g.qty})` : ''}
+                      </button>
+                    </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
-          {notReceivedItems.length > 1 && (
+          {groups.length > 1 && (
             <button className="btn btn-primary btn-sm" style={{ marginTop:10 }}
               onClick={() => confirmNotReceived(notReceivedItems.map(i => i.id))}>
-              ✓ Mark All as Now Received
+              ✓ Mark All as Now Received ({notReceivedItems.length} units)
             </button>
           )}
         </div>
-      )}
+        );
+      })()}
 
       {/* Upload stage */}
       {stage === 'upload' && (
