@@ -29,12 +29,25 @@ export async function GET(request) {
 
   const companyParam = searchParams.get('company'); // 'all' | 'soma' | 'nalanda' | 'gangotri' | null
 
+  // Optional comma-separated column list. Analysis views only need a handful of
+  // columns; sending every column for thousands of rows is slow and can time out.
+  const fieldsParam = searchParams.get('fields');
+  const ALLOWED_FIELDS = new Set([
+    'id','product_code','product_name','quantity','packets_in_product','input_date',
+    'type_of_entry','location','price','invoice_number','invoice_date','status',
+    'pending_receipt','not_received','invoice_upload_id','company','notes',
+    'created_at','updated_at',
+  ]);
+  const selectCols = fieldsParam
+    ? (fieldsParam.split(',').map(f => f.trim()).filter(f => ALLOWED_FIELDS.has(f)).join(',') || '*')
+    : '*';
+
   // Builds a fresh query each call — a Supabase query object cannot be reused
   // once awaited, so each page needs its own.
   const buildQuery = () => {
     let query = supabase
       .from('inventory')
-      .select('*', { count: 'exact' })
+      .select(selectCols, { count: 'exact' })
       .order('created_at', { ascending: false });
 
     // 'all' = every company (Free Stock, shared warehouse views);
