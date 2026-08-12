@@ -34,15 +34,24 @@ function BillingTab({ company }) {
 
   async function load() {
     setLoading(true); setError('');
-    const p = new URLSearchParams({ company, period:periodType, fy_year:fyYear });
-    if (periodType==='month')   p.set('month',   month);
-    if (periodType==='quarter') p.set('quarter', quarter);
-    const res = await fetch(`/api/billing?${p}`);
-    const d   = await res.json();
-    if (!res.ok) { setError(d.error); setLoading(false); return; }
-    setRows(d.rows||[]); setGrandTotal(d.grandTotal||0);
-    setTrend(d.monthlyTrend||{}); setInvCount(d.invoiceCount||0);
-    setExcluded(new Set()); setLoading(false);
+    try {
+      const p = new URLSearchParams({ company, period: periodType, fy_year: fyYear });
+      if (periodType === 'month')   p.set('month',   month);
+      if (periodType === 'quarter') p.set('quarter', quarter);
+      const res = await fetch(`/api/billing?${p}`);
+      const d   = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || `Server returned ${res.status}`);
+      setRows(d.rows || []);
+      setGrandTotal(d.grandTotal || 0);
+      setTrend(d.monthlyTrend || {});
+      setInvCount(d.invoiceCount || 0);
+      setExcluded(new Set());
+    } catch (e) {
+      setError(e.message || 'Failed to load billing data.');
+      setRows([]); setGrandTotal(0); setTrend({}); setInvCount(0);
+    } finally {
+      setLoading(false);   // always clears — never leaves the page spinning
+    }
   }
 
   const included      = rows.filter(r => !excluded.has(r.salesman_code));
@@ -292,6 +301,136 @@ function InventoryAnalysisTab({ company }) {
   );
 }
 
+
+function ShortfallsTab({ company }) {
+  const [rows,    setRows]    = useState([]);
+  const [total,   setTotal]   = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
+  const [success, setSuccess] = useState('');
+  const [busy,    setBusy]    = useState(null);
+
+  useEffect(() => { load(); }, [company]);
+
+  async function load() {
+    setLoading(true); setError('');
+    try {
+      const res = await fetch(`/api/shortfalls?company=${company}`);
+      const d   = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || `Server returned ${res.status}`);
+      setRows(d.rows || []);
+      setTotal(d.totalUnits || 0);
+    } catch (e) {
+      setError(e.message || 'Failed to load shortfalls.');
+      setRows([]); setTotal(0);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function writeOff(row) {
+    if (!confirm(`Write off ${row.units_owed} unit(s) of "${row.product_name}"?\n\nUse this when the item was old stock that was never entered into the system. The record is kept for reference.`)) return;
+    setBusy(row.product_code); setError(''); setSuccess('');
+    try {
+      const res = await fetch('/api/shortfalls', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: row.ids, resolution: 'not_in_system' }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || `Server returned ${res.status}`);
+      setSuccess(`Wrote off ${row.units_owed} unit(s) of "${row.product_name}".`);
+      load();
+    } catch (e) {
+      setError(e.message || 'Failed to write off.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function writeOffAll() {
+    if (!rows.length) return;
+    if (!confirm(`Write off ALL ${total} outstanding unit(s) across ${rows.length} product(s)?\n\nThis marks every open shortfall as legacy stock not in the system.`)) return;
+    setBusy('__all__'); setError(''); setSuccess('');
+    try {
+      const ids = rows.flatMap(r => r.ids);
+      const res = await fetch('/api/shortfalls', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, resolution: 'not_in_system' }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || `Server returned ${res.status}`);
+      setSuccess(`Wrote off ${total} unit(s).`);
+      load();
+    } catch (e) {
+      setError(e.message || 'Failed to write off.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div>
+      {error   && <div className="alert alert-error">{error}</div>}
+      {success && <div className="alert alert-success">{success}</div>}
+
+      <p style={{ fontSize:12, color:'var(--muted)', marginBottom:14 }}>
+        Stock released on a challan that the system had no free units for. Usually this
+        means the item was old stock never entered into the system — write it off to clear it.
+      </p>
+
+      {loading ? <div className="spinner"/> : (<>
+        <div style={{ display:'flex', gap:12, flexWrap:'wrap', marginBottom:16, alignItems:'center' }}>
+          <div className="card" style={{ padding:'12px 18px', minWidth:160,
+            background: rows.length ? '#fff7ed' : undefined,
+            borderColor: rows.length ? '#f97316' : undefined }}>
+            <div style={{ fontSize:11, color: rows.length ? '#f97316' : 'var(--muted)' }}>Outstanding Shortfalls</div>
+            <div style={{ fontSize:20, fontWeight:800 }}>{total} unit{total!==1?'s':''}</div>
+            <div style={{ fontSize:11, color:'var(--muted)' }}>{rows.length} product{rows.length!==1?'s':''}</div>
+          </div>
+          {rows.length > 1 && (
+            <button className="btn btn-secondary btn-sm" onClick={writeOffAll} disabled={busy==='__all__'}>
+              {busy==='__all__' ? 'Writing off…' : `Write off all (${total})`}
+            </button>
+          )}
+          <button className="btn btn-secondary btn-sm" onClick={load}>↻ Refresh</button>
+        </div>
+
+        {rows.length === 0 ? (
+          <p style={{ color:'var(--success)', fontSize:13 }}>✓ No outstanding shortfalls.</p>
+        ) : (
+          <table>
+            <thead><tr>
+              <th>Product</th><th>LN Code</th><th>Company</th>
+              <th style={{textAlign:'right'}}>Units Owed</th>
+              <th>Challan(s)</th><th>First Seen</th><th>Action</th>
+            </tr></thead>
+            <tbody>
+              {rows.map((r,i) => (
+                <tr key={i}>
+                  <td style={{fontWeight:500}}>{r.product_name}</td>
+                  <td className="mono" style={{fontSize:11,color:'var(--muted)'}}>{r.product_code}</td>
+                  <td style={{fontSize:12}}>{r.company}</td>
+                  <td style={{textAlign:'right',fontFamily:'var(--font-mono)',fontWeight:700,color:'#dc2626'}}>
+                    −{r.units_owed}
+                  </td>
+                  <td className="mono" style={{fontSize:10}}>{r.challans || '—'}</td>
+                  <td style={{fontSize:11,color:'var(--muted)'}}>{r.first_seen || '—'}</td>
+                  <td>
+                    <button className="btn btn-secondary btn-sm"
+                      onClick={() => writeOff(r)} disabled={busy===r.product_code}>
+                      {busy===r.product_code ? 'Writing off…' : 'Write off'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </>)}
+    </div>
+  );
+}
+
 export default function InventoryAnalysisPage() {
   const [tab,     setTab]     = useState('billing');
   const [company, setCompany] = useState('soma');
@@ -306,7 +445,7 @@ export default function InventoryAnalysisPage() {
         </select>
       </div>
       <div style={{display:'flex',gap:4,marginBottom:20,borderBottom:'2px solid var(--border)'}}>
-        {[['billing','Billing Analysis'],['inventory','Inventory Analysis']].map(([id,label])=>(
+        {[['billing','Billing Analysis'],['inventory','Inventory Analysis'],['shortfalls','Shortfalls']].map(([id,label])=>(
           <button key={id} onClick={()=>setTab(id)} style={{padding:'8px 18px',border:'none',cursor:'pointer',fontSize:13,fontWeight:600,background:tab===id?'var(--primary)':'transparent',color:tab===id?'#fff':'var(--muted)',borderRadius:'4px 4px 0 0'}}>
             {label}
           </button>
@@ -314,6 +453,7 @@ export default function InventoryAnalysisPage() {
       </div>
       {tab==='billing'   && <BillingTab   company={company}/>}
       {tab==='inventory' && <InventoryAnalysisTab company={company}/>}
+      {tab==='shortfalls' && <ShortfallsTab company={company}/>}
     </div>
   );
 }
