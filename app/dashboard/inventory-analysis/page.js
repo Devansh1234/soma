@@ -160,24 +160,42 @@ function InventoryAnalysisTab({ company }) {
   const [items,   setItems]   = useState([]);
   const [dispatched, setDisp] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
 
   useEffect(() => { load(); }, [company]);
 
   async function load() {
-    setLoading(true);
-    const [fRes, dRes] = await Promise.all([
-      fetch(`/api/inventory?company=${company}&status=free&limit=20000&pending=false`),
-      fetch(`/api/inventory?company=${company}&status=dispatched&limit=20000`),
-    ]);
-    const { data: free } = await fRes.json();
-    const { data: disp } = await dRes.json();
-    setItems(free||[]); setDisp(disp||[]); setLoading(false);
+    setLoading(true); setError('');
+    // Only the columns these calculations actually use — keeps the payload small
+    const FREE_FIELDS = 'id,product_code,product_name,quantity,price,input_date';
+    const DISP_FIELDS = 'id,product_code,quantity,updated_at';
+    try {
+      const [fRes, dRes] = await Promise.all([
+        fetch(`/api/inventory?company=${company}&status=free&pending=false&limit=20000&fields=${FREE_FIELDS}`),
+        fetch(`/api/inventory?company=${company}&status=dispatched&limit=20000&fields=${DISP_FIELDS}`),
+      ]);
+      if (!fRes.ok || !dRes.ok) {
+        throw new Error(`Server returned ${!fRes.ok ? fRes.status : dRes.status}. Try narrowing the company filter.`);
+      }
+      const { data: free } = await fRes.json();
+      const { data: disp } = await dRes.json();
+      setItems(free || []);
+      setDisp(disp || []);
+    } catch (e) {
+      setError(e.message || 'Failed to load inventory data.');
+      setItems([]); setDisp([]);
+    } finally {
+      setLoading(false);   // always clears — never leaves the page spinning
+    }
   }
 
   const turnover = useMemo(() => {
     const now = Date.now(); const DAY = 86400000;
-    const avg = items.length || 1;
-    const count = days => (dispatched||[]).filter(d => (now - new Date(d.updated_at).getTime()) <= days*DAY).length;
+    const units = r => Number(r.quantity ?? 1) || 1;
+    const avg = (items || []).reduce((s, r) => s + units(r), 0) || 1;
+    const count = days => (dispatched||[])
+      .filter(d => (now - new Date(d.updated_at).getTime()) <= days*DAY)
+      .reduce((s, d) => s + units(d), 0);
     return { monthly: (count(30)/avg).toFixed(2), quarterly: (count(90)/avg).toFixed(2), annual: (count(365)/avg).toFixed(2) };
   }, [items, dispatched]);
 
@@ -187,8 +205,9 @@ function InventoryAnalysisTab({ company }) {
     for (const item of items) {
       const key = item.product_code || item.product_name || item.id;
       if (!groups[key]) groups[key] = { ln_code:item.product_code||'—', name:item.product_name||'—', count:0, totalCost:0, oldestDate:null };
-      groups[key].count++;
-      groups[key].totalCost += parseFloat(item.price)||0;
+      const units = Number(item.quantity ?? 1) || 1;
+      groups[key].count     += units;
+      groups[key].totalCost += (parseFloat(item.price)||0) * units;
       const d = parseDMY(item.input_date);
       if (d && (!groups[key].oldestDate || d < groups[key].oldestDate)) groups[key].oldestDate = d;
     }
@@ -210,12 +229,13 @@ function InventoryAnalysisTab({ company }) {
 
   return (
     <div>
+      {error && <div className="alert alert-error">{error}</div>}
       {loading ? <div className="spinner"/> : (<>
         <div style={{display:'flex',gap:12,flexWrap:'wrap',marginBottom:18}}>
           <div className="card" style={{padding:'12px 18px',minWidth:160}}>
             <div style={{fontSize:11,color:'var(--muted)'}}>Total Stock Value</div>
             <div style={{fontSize:20,fontWeight:800,fontFamily:'var(--font-mono)'}}>₹{FMT_INR(totalValue)}</div>
-            <div style={{fontSize:11,color:'var(--muted)'}}>{items.length} units · {abcRows.length} SKUs</div>
+            <div style={{fontSize:11,color:'var(--muted)'}}>{abcRows.reduce((s,r)=>s+r.count,0)} units · {abcRows.length} SKUs</div>
           </div>
           <div className="card" style={{padding:'12px 18px',minWidth:160,background:agingItems.length?'#fff7ed':undefined,borderColor:agingItems.length?'#f97316':undefined}}>
             <div style={{fontSize:11,color:agingItems.length?'#f97316':'var(--muted)'}}>⏰ Aging Stock (&gt;60 days)</div>
