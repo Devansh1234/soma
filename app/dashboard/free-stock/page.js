@@ -30,6 +30,7 @@ function CompanyBadge({ company }) {
 
 export default function FreeStockPage() {
   const [user,      setUser]      = useState(null);
+  const [error,     setError]     = useState('');
   const [view,      setView]      = useState('grouped');
   const [items,     setItems]     = useState([]);
   const [total,     setTotal]     = useState(0);
@@ -44,14 +45,22 @@ export default function FreeStockPage() {
   useEffect(() => { load(); }, [debSearch, location, company, view]);
 
   async function load() {
-    setLoading(true);
+    setLoading(true); setError('');
     const params = new URLSearchParams({ status: 'free', limit: '20000', pending: 'false', company });
     if (debSearch) params.set('q', debSearch);
     if (location)  params.set('location', location);
 
-    const res  = await fetch(`/api/inventory?${params}`);
-    const { data } = await res.json();
-    const rows = data || [];
+    let rows = [];
+    try {
+      const res = await fetch(`/api/inventory?${params}`);
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || `Server returned ${res.status}`);
+      rows = payload.data || [];
+    } catch (e) {
+      setError(e.message || 'Failed to load stock.');
+      setItems([]); setTotal(0); setLoading(false);
+      return;
+    }
 
     setLocations([...new Set(rows.map(r => r.location).filter(Boolean))].sort());
 
@@ -131,6 +140,7 @@ export default function FreeStockPage() {
         <button className="btn btn-secondary btn-sm" onClick={load}>↻ Refresh</button>
       </div>
 
+      {error && <div className="alert alert-error">{error}</div>}
       {loading ? <div className="spinner" /> : (
         <table>
           <thead>
