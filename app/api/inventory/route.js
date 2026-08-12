@@ -9,51 +9,75 @@ function requireAccess(user) {
   return null;
 }
 
+// Supabase/PostgREST caps every response at 1000 rows regardless of the range
+// header, so any request for more must be fetched in chunks and stitched back
+// together. Without this, large views silently show only the first 1000 rows.
+const PAGE_SIZE = 1000;
+
 export async function GET(request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { searchParams } = new URL(request.url);
-  const status   = searchParams.get('status');
-  const location = searchParams.get('location');
-  const q        = searchParams.get('q') || '';
-  const limit    = parseInt(searchParams.get('limit') || '500');
-  const offset   = parseInt(searchParams.get('offset') || '0');
-  const pending  = searchParams.get('pending'); // 'true' | 'false' | null (all)
+  const status      = searchParams.get('status');
+  const location    = searchParams.get('location');
+  const q           = searchParams.get('q') || '';
+  const limit       = parseInt(searchParams.get('limit') || '500');
+  const offset      = parseInt(searchParams.get('offset') || '0');
+  const pending     = searchParams.get('pending');      // 'true' | 'false' | null (all)
+  const notReceived = searchParams.get('not_received'); // 'true' | 'false' | null (all)
 
   const companyParam = searchParams.get('company'); // 'all' | 'soma' | 'nalanda' | 'gangotri' | null
 
-  let query = supabase
-    .from('inventory')
-    .select('*', { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+  // Builds a fresh query each call — a Supabase query object cannot be reused
+  // once awaited, so each page needs its own.
+  const buildQuery = () => {
+    let query = supabase
+      .from('inventory')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false });
 
-  // 'all' = show every company (used by Free Stock); specific = filter to that company; default = user's own company
-  if (companyParam === 'all') {
-    // no company filter — intentionally show all
-  } else if (companyParam) {
-    query = query.eq('company', companyParam);
-  } else {
-    query = query.eq('company', user.company);
+    // 'all' = every company (Free Stock, shared warehouse views);
+    // specific = that company; default = the user's own company
+    if (companyParam === 'all') {
+      // no company filter — intentionally show all
+    } else if (companyParam) {
+      query = query.eq('company', companyParam);
+    } else {
+      query = query.eq('company', user.company);
+    }
+
+    if (status)   query = query.eq('status', status);
+    if (location) query = query.eq('location', location);
+    if (q)        query = query.ilike('product_name', `%${q}%`);
+    if (pending === 'true')      query = query.eq('pending_receipt', true);
+    if (pending === 'false')     query = query.eq('pending_receipt', false);
+    if (notReceived === 'true')  query = query.eq('not_received', true);
+    if (notReceived === 'false') query = query.eq('not_received', false);
+    return query;
+  };
+
+  const rows = [];
+  let totalCount = 0;
+
+  while (rows.length < limit) {
+    const want = Math.min(PAGE_SIZE, limit - rows.length);
+    const from = offset + rows.length;
+
+    const { data, error, count } = await buildQuery().range(from, from + want - 1);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    if (typeof count === 'number') totalCount = count;
+    if (!data?.length) break;
+
+    rows.push(...data);
+    if (data.length < want) break; // reached the end of the result set
   }
 
-  if (status)   query = query.eq('status', status);
-  if (location) query = query.eq('location', location);
-  if (q)        query = query.ilike('product_name', `%${q}%`);
-  if (pending === 'true')  query = query.eq('pending_receipt', true);
-  if (pending === 'false') query = query.eq('pending_receipt', false);
-  const notReceived = searchParams.get('not_received');
-  if (notReceived === 'true')  query = query.eq('not_received', true);
-  if (notReceived === 'false') query = query.eq('not_received', false);
-
-  const { data, error, count } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
   // Strip price from non-owner responses (cost price is confidential)
-  const isOwner = user.role === 'owner';
-  const safeData = isOwner ? data : (data || []).map(({ price, ...rest }) => rest);
-  return NextResponse.json({ data: safeData, count });
+  const isOwner  = user.role === 'owner';
+  const safeData = isOwner ? rows : rows.map(({ price, ...rest }) => rest);
+  return NextResponse.json({ data: safeData, count: totalCount });
 }
 
 export async function POST(request) {
