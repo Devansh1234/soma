@@ -45,7 +45,7 @@ export default function FreeStockPage() {
 
   async function load() {
     setLoading(true);
-    const params = new URLSearchParams({ status: 'free', limit: '1000', pending: 'false', company });
+    const params = new URLSearchParams({ status: 'free', limit: '20000', pending: 'false', company });
     if (debSearch) params.set('q', debSearch);
     if (location)  params.set('location', location);
 
