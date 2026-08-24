@@ -816,7 +816,7 @@ export default function ChallanPage() {
                     </div>
                     <div className="form-group">
                       <label>Mobile</label>
-                      <input value={customerMobile} onChange={e => setCustomerMobile(e.target.value)} maxLength={14} placeholder="9876543210" />
+                      <input value={customerMobile} onChange={e => setCustomerMobile(e.target.value)} maxLength={40} placeholder="9876543210 / 9123456789" />
                     </div>
                     <div className="form-group">
                       <label>Address Line 1</label>
@@ -879,7 +879,7 @@ export default function ChallanPage() {
                           onChange={v => setProductField(i,'name',v)}
                           onSelect={v => onProductSelect(i, v)}
                           fetchFn={q => fetch(`/api/products?q=${encodeURIComponent(q)}`).then(r => r.json()).then(list => Array.isArray(list) ? list.map(x => x.name || x) : list)}
-                          placeholder="Search product…" maxLength={60} />
+                          placeholder="Search product…" maxLength={120} />
                         <ProductWarning product={p} onSave={saveProduct} />
                       </div>
                       <input
