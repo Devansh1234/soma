@@ -9,10 +9,19 @@ const TABS = [
   { key: 'order_booking',      label: 'Order Booking',     path: '/dashboard/order-booking' },
   { key: 'order_management',   label: 'Order Mgt.',        path: '/dashboard/order-management' },
   { key: 'inventory_analysis', label: 'Inv. Analysis',     path: '/dashboard/inventory-analysis' },
+  { key: 'walkins',            label: 'Walk-ins',          path: '/dashboard/walkins' },
   { key: 'admin',              label: 'Admin',             path: '/dashboard/admin' },
 ];
 
 const COMPANY_LABEL = { soma: 'Soma & Co.', nalanda: 'Nalanda & Co.', gangotri: 'Gangotri' };
+
+// Most tabs map 1:1 to a permission key. The warehouse page is the exception:
+// staff granted only 'internal_challan' can open it and will see just the
+// Internal Transfer tab inside, so the link must show for them too.
+function canSeeTab(perms, key) {
+  if (key === 'warehouse') return !!(perms.warehouse || perms.internal_challan);
+  return !!perms[key];
+}
 
 export default function DashboardLayout({ children }) {
   const router = useRouter();
@@ -34,7 +43,7 @@ export default function DashboardLayout({ children }) {
   }
 
   const visibleTabs = user
-    ? TABS.filter(t => user.permissions?.[t.key])
+    ? TABS.filter(t => canSeeTab(user.permissions || {}, t.key))
     : [];
 
   return (
