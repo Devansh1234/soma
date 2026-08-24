@@ -15,6 +15,7 @@ const ALL_TABS = [
   { key: 'order_management',   label: 'Order Mgt.' },
   { key: 'inventory_analysis', label: 'Inv. Analysis' },
   { key: 'internal_challan',   label: 'Internal Challan' },
+  { key: 'walkins',            label: 'Walk-in Tracker' },
   { key: 'admin',              label: 'Admin' },
 ];
 
