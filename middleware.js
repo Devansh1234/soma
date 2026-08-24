@@ -10,6 +10,7 @@ const ROUTE_PERMISSIONS = {
   '/dashboard/order-booking':      'order_booking',
   '/dashboard/order-management':   'order_management',
   '/dashboard/inventory-analysis': 'inventory_analysis',
+  '/dashboard/walkins':            'walkins',
   '/dashboard/admin':              'admin',
 };
 
