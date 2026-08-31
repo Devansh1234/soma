@@ -23,6 +23,15 @@ function parseGodrejInvoice(text) {
     return '';
   })();
 
+  // Salesman name, e.g. "Salesman Code : RISHABH KUMAR SINGH  Area Code : Lucknow"
+  const salesmanCode = (() => {
+    for (const l of lines) {
+      const m = l.match(/Salesman Code\s*:\s*([A-Z][A-Z\s]+?)(?:\s{2,}|Area Code|$)/i);
+      if (m) return m[1].trim();
+    }
+    return '';
+  })();
+
   // Line A: LN code + qty.4dec + weight.2dec
   const LINE_A_RE = /^([A-Z0-9]+-)?([0-9]{8}[A-Z]{2}[0-9]{5})(\/[A-Z0-9]+)?\s*([\d]+\.[\d]{4})\s*([\d]+\.[\d]{2})/;
   // Line B: starts with Sr number then uppercase letter (WON... order)
@@ -74,7 +83,7 @@ function parseGodrejInvoice(text) {
   }
 
   console.log(`[auto-receive] ${invoiceNumber} | ${invoiceDate} | ${items.length} items`);
-  return { invoiceNumber, invoiceDate, items };
+  return { invoiceNumber, invoiceDate, salesmanCode, items };
 }
 
 function detectCompany(text) {
@@ -108,6 +117,34 @@ export async function POST(request) {
       }, { status: 422 });
     }
 
+    // ── DUPLICATE GUARD ───────────────────────────────────────────────────────
+    // Suppliers sometimes re-send the same invoice, and a re-sent email lands in
+    // the same Gmail thread. Importing it twice silently doubles stock, so an
+    // invoice number already recorded for this company is never imported again.
+    // Returns ok:true so the sender treats it as handled, not as a failure.
+    if (result.invoiceNumber && result.invoiceNumber !== 'UNKNOWN') {
+      const { data: existing, error: dupErr } = await supabase
+        .from('invoice_uploads')
+        .select('id, uploaded_at')
+        .eq('invoice_number', result.invoiceNumber)
+        .eq('company', company)
+        .maybeSingle();
+
+      if (dupErr) throw dupErr;
+
+      if (existing) {
+        console.warn(`[auto-receive] Duplicate ignored: ${result.invoiceNumber} (${company}), already imported ${existing.uploaded_at}`);
+        return NextResponse.json({
+          ok: true,
+          duplicate: true,
+          invoiceNumber: result.invoiceNumber,
+          company,
+          itemsAdded: 0,
+          message: 'Invoice already imported — ignored.',
+        });
+      }
+    }
+
     // Create invoice_uploads record
     const totalQty = result.items.reduce((s, i) => s + i.quantity, 0);
     const { data: upload, error: uploadErr } = await supabase
@@ -115,6 +152,7 @@ export async function POST(request) {
       .insert({
         invoice_number: result.invoiceNumber,
         invoice_date:   result.invoiceDate,
+        salesman_code:  result.salesmanCode || null,
         supplier:       'Godrej & Boyce Mfg Co. Ltd.',
         total_items:    totalQty,
         received_items: 0,
@@ -153,6 +191,7 @@ export async function POST(request) {
     return NextResponse.json({
       ok: true, invoiceNumber: result.invoiceNumber,
       invoiceDate: result.invoiceDate, company,
+      salesman: result.salesmanCode || null,
       itemsAdded: rows.length, lineItems: result.items.length,
     });
 
