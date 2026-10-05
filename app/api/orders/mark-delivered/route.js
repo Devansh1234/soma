@@ -8,7 +8,7 @@ export async function POST(request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { itemId, deliveredQty, challanNo, billNo } = await request.json();
+  const { itemId, deliveredQty, challanNo, billNo, deliveredDate } = await request.json();
   if (!itemId || !challanNo?.trim()) {
     return NextResponse.json({ error: 'itemId and challanNo required' }, { status: 400 });
   }
@@ -25,12 +25,19 @@ export async function POST(request) {
   const newDelivered = item.delivered_qty + qty;
   const fullyDone    = newDelivered >= item.ordered_qty;
 
+  // Goods often go out before anyone records it, so the date is entered by the
+  // user. A plain YYYY-MM-DD is read as UTC midnight, which can show as the
+  // previous day in IST — so pin it to midday to keep the calendar date intact.
+  const deliveredAt = deliveredDate
+    ? new Date(`${deliveredDate}T12:00:00`).toISOString()
+    : new Date().toISOString();
+
   const updates = {
     delivered_qty:  newDelivered,
     status:         fullyDone ? 'delivered' : 'pending_delivery',
     challan_refs:   [...(item.challan_refs || []), challanNo.trim()],
     bill_numbers:   billNo?.trim() ? [...(item.bill_numbers || []), billNo.trim()] : (item.bill_numbers || []),
-    delivered_at:   fullyDone ? new Date().toISOString() : null,
+    delivered_at:   fullyDone ? deliveredAt : null,
   };
 
   const { error: updErr } = await supabase
@@ -50,7 +57,7 @@ export async function POST(request) {
     const allDone = (siblings || []).every(s => s.status === 'delivered');
     if (allDone) {
       await supabase.from('orders')
-        .update({ status: 'delivered', updated_at: new Date().toISOString() })
+        .update({ status: 'delivered', updated_at: deliveredAt })
         .eq('id', item.order_id);
     }
   }
