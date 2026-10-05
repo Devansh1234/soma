@@ -109,6 +109,7 @@ function PendingDeliveryTable({ items, onDelivered, onError }) {
   const [challanNo,  setChallanNo]  = useState('');
   const [billNo,     setBillNo]     = useState('');
   const [delivQty,   setDelivQty]   = useState(1);
+  const [delivDate,  setDelivDate]  = useState(() => new Date().toISOString().split('T')[0]);
   const [saving,     setSaving]     = useState(false);
 
   function openForm(item) {
@@ -116,6 +117,7 @@ function PendingDeliveryTable({ items, onDelivered, onError }) {
     setChallanNo('');
     setBillNo('');
     setDelivQty(item.ordered_qty - item.delivered_qty);
+    setDelivDate(new Date().toISOString().split('T')[0]);
   }
 
   function closeForm() { setActiveRow(null); }
@@ -128,27 +130,14 @@ function PendingDeliveryTable({ items, onDelivered, onError }) {
     const newDelivered = item.delivered_qty + qty;
     const fullyDone    = newDelivered >= item.ordered_qty;
 
-    const updates = {
-      delivered_qty:  newDelivered,
-      status:         fullyDone ? 'delivered' : 'pending_delivery',
-      challan_refs:   [...(item.challan_refs||[]), challanNo.trim()],
-      bill_numbers:   billNo.trim() ? [...(item.bill_numbers||[]), billNo.trim()] : item.bill_numbers,
-      delivered_at:   fullyDone ? new Date().toISOString() : null,
-    };
-
-    const res = await fetch('/api/inventory', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: item.id, ...updates }),
-    });
-
-    // Use the order_items table directly via the orders action route
     const res2 = await fetch('/api/orders/mark-delivered', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        itemId:      item.id,
-        deliveredQty: qty,
-        challanNo:   challanNo.trim(),
-        billNo:      billNo.trim(),
+        itemId:        item.id,
+        deliveredQty:  qty,
+        challanNo:     challanNo.trim(),
+        billNo:        billNo.trim(),
+        deliveredDate: delivDate,   // the day goods actually went out
       }),
     });
 
@@ -206,6 +195,11 @@ function PendingDeliveryTable({ items, onDelivered, onError }) {
                         <label style={{ fontSize:11 }}>Bill / Invoice No.</label>
                         <input value={billNo} onChange={e=>setBillNo(e.target.value)}
                           placeholder="SCI/2025-26/1252" style={{ minWidth:160 }} />
+                      </div>
+                      <div className="form-group" style={{ margin:0, width:150 }}>
+                        <label style={{ fontSize:11 }}>Delivery Date</label>
+                        <input type="date" value={delivDate}
+                          onChange={e => setDelivDate(e.target.value)} />
                       </div>
                       {remaining > 1 && (
                         <div className="form-group" style={{ margin:0, width:100 }}>
