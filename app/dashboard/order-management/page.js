@@ -339,7 +339,12 @@ export default function OrderManagementPage() {
 
           {tab === 'delivered' && (
             <FlatTable
-              items={flatItems(delivered, 'delivered')}
+              items={flatItems(delivered, 'delivered').sort((a, b) => {
+                // Most recently delivered first; undated items fall to the bottom
+                const ta = a.delivered_at ? new Date(a.delivered_at).getTime() : -Infinity;
+                const tb = b.delivered_at ? new Date(b.delivered_at).getTime() : -Infinity;
+                return tb - ta;
+              })}
               columns={['Retailer','Product','LN Code','Qty','Order Date','SO Number','Challan No.','Bill No.','Delivered Date']}
               renderRow={i => [
                 <strong>{i.retailer_name}</strong>,
